@@ -1,0 +1,439 @@
+# Small substitution drivers
+Working with the gene-centric dndscv approach and the gene-agnostic ActiveDriverWGS approach, we explore small substitution (snv to in/del size) drivers.
+
+## Prepare data
+
+```{r}
+
+#BiocManager::install(c('BSgenome.Hsapiens.UCSC.hg19', 'BSgenome.Hsapiens.UCSC.hg38', 'BSgenome.Mmusculus.UCSC.mm9', 'BSgenome.Mmusculus.UCSC.mm10'))
+#devtools::install_github('https://github.com/reimandlab/ActiveDriverWGSR')
+#devtools::install_github("im3sanger/dndscv")
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(tidyr)
+  library(dplyr)
+  library(GenomicRanges)
+  #library(CNTools)
+  library(ActiveDriverWGS)
+  library(dndscv)
+  library(ggplot2)
+  library(ggrepel)
+})
+
+packageVersion('ActiveDriverWGS')
+packageVersion('dndscv')
+
+'%ni%' <- function(x,y)!('%in%'(x,y))
+
+basedir = '~/Documents/scripts/github/btc-ccs/'
+secdir = '~/Documents/scripts/github/evolution/'
+
+source(paste0(basedir,"/bin/driver_functions.R"))
+
+
+##define genes (using dnds Granges)
+dndscv_reference_data_path <- file.path(secdir,'/code/src/dndscv_data/data/RefCDS_human_GRCh38_GencodeV18_recommended.rda')
+load(file=dndscv_reference_data_path)
+
+candidate_gene_exons <- data.frame(chr=paste0('chr',seqnames(gr_genes)),
+                           start=start(gr_genes),
+                           end=end(gr_genes),
+                           id=gr_genes$names)
+
+##writes to file
+make_vcfs=F
+if(make_vcfs){
+  ## define sample set ##
+  
+  sample.list <- fread(file.path(basedir,'/source_data/sample.list.txt'), header=F)
+  
+  collate_barebones_vcf_write(sample.list, 
+                              inpath='/Volumes/pcsi/users/fbeaudry/more.data/', 
+                              outpath=file.path(secdir,'/results/'), 
+                              variant_types = c("indel","snv"))
+}
+
+
+all_mutations <- read.delim(file.path(secdir,"/results/all_mutations.txt"))
+length(unique(all_mutations$patient))
+
+all_mutations <- all_mutations %>% arrange(patient,chr,pos1,pos2)
+
+#removes scaffolds without candidate genes
+all_mutations <- all_mutations[all_mutations$chr %in% unique(candidate_gene_exons$chr),]
+#also a check that the candidate annotation and mutation annotation match
+
+dndscv_muts <- all_mutations[,c("patient", "chr", "pos1", "ref", "alt")]
+names(dndscv_muts) <- c("sampleID", "chr", "pos", "ref", "mut")
+dndscv_muts$chr <- gsub(pattern = 'chr', replacement = '', dndscv_muts$chr)
+
+```
+
+## run driver analyses
+activedriver takes up to 12 hours so we don't run that everytime.
+
+```{r}
+
+get_drivers = F
+if(get_drivers){
+  
+  # dndscv_muts[c(182350,186482),]
+    
+  result <- tryCatch({
+    dndsout = dndscv(dndscv_muts, refdb =  dndscv_reference_data_path, outp = 3, cv = NULL)
+  }, error = function(e) {
+    message("Error: ", e)
+    NULL
+  })
+  
+
+  dndsout.annotmuts <- dndsout$annotmuts
+  
+  write.table(
+    dndsout$sel_cv,
+    file = paste0(basedir, "/results/sel_cv.txt"),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+  
+  write.table(
+    dndsout$annotmuts,
+    file = paste0(basedir, "/results/dnds_annotation.txt"),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+  
+  active_driver_results = ActiveDriverWGS(mutations = all_mutations, elements = candidate_gene_exons, ref_genome = 'hg38')
+  
+  write.table(
+    active_driver_results,
+    file = paste0(basedir, "/results/active_driver_results.txt"),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+  
+  
+}
+
+```
+
+## review results
+Let's compare drivers discovered by the two methods. We manually review cases with mutations in new drivers (eg PTH2) using IGV; spoiler alert: they are artefacts.
+
+```{r}
+
+active_driver_results <- fread(paste0(basedir, "/results/active_driver_results.txt"))
+active_drivers <- active_driver_results$id[active_driver_results$fdr_element < 1 & active_driver_results$element_muts_obs > 4]
+
+sel_cv <- fread(paste0(basedir, "/results/sel_cv.txt"))
+dnds_annotation <- fread(paste0(basedir, "/results/dnds_annotation.txt"))
+
+all_genes <- fread(file.path(basedir,'/source_data/fgs.txt')) 
+gene_set <- all_genes[all_genes$biotype=="protein_coding" & all_genes$Length >= 500,]
+cancerGeneList <- fread('~/Documents/scripts/github/evolution/source_data/cancerGeneList.tsv')
+
+
+positioned_drivers <- left_join( active_driver_results, all_genes, by=c("id"="gene_name"))
+positioned_drivers_dnds <- full_join( positioned_drivers, sel_cv, by=c("id"="gene_name"))
+
+positioned_drivers_dnds$chr_fac <- factor(gsub("chr","",positioned_drivers_dnds$Chr), levels=c(1:22,'X'))
+positioned_drivers_dnds <- positioned_drivers_dnds %>% filter(!is.na(chr_fac))
+
+positioned_drivers_dnds$fdr_element_sigfig <- signif(positioned_drivers_dnds$fdr_element, 2)
+positioned_drivers_dnds$qglobal_cv_sigfig <- signif(positioned_drivers_dnds$qglobal_cv, 2)
+
+## filter False Positives
+#PTH2: low VAF, in repeat region, same spot
+#USP8: unsure, complex recurrent mutation: always same two in-phase mutations ~8 bp apart
+positioned_drivers_dnds <- positioned_drivers_dnds %>% filter(id %ni% c('PTH2','USP8')) 
+
+sig_id <- positioned_drivers_dnds$id[positioned_drivers_dnds$fdr_element_sigfig < 0.05 | positioned_drivers_dnds$qglobal_cv_sigfig < 0.05] 
+
+positioned_drivers_dnds.plot <- positioned_drivers_dnds
+positioned_drivers_dnds.plot$fdr_element_sigfig[-log(positioned_drivers_dnds.plot$fdr_element_sigfig) > 30] <- 0
+
+#subsampling rows in bottom left corner of dots that would just stack, for file size
+keep_rows <- positioned_drivers_dnds.plot[positioned_drivers_dnds.plot$fdr_element_sigfig < 1 |positioned_drivers_dnds.plot$qglobal_cv_sigfig < 1 ]
+sample_rows <- positioned_drivers_dnds.plot[positioned_drivers_dnds.plot$fdr_element_sigfig == 1, ]
+sampled_subset <- sample_rows[sample(nrow(sample_rows), 20), ]
+
+positioned_drivers_dnds.plot <- rbind.data.frame(keep_rows, sampled_subset)
+
+drivers.pvalues.plot <- 
+ggplot(positioned_drivers_dnds.plot, aes(y=-log(fdr_element_sigfig), x=-log(qglobal_cv_sigfig))) +
+  
+  geom_vline(xintercept = -log(0.05), color='grey', linetype='dotted')+
+  geom_hline(yintercept = -log(0.05), color='grey', linetype='dotted')+
+  
+  geom_point(size=2.5, color='grey') +  
+  geom_point(size=2.5, data = ~ subset(., id %in% sig_id)) +  
+  geom_label_repel(aes(label=id),  data = ~ subset(., id %in% sig_id), size=2, max.overlaps =20,
+                   box.padding = 0.75, force = 0.25, max.time = 3,  min.segment.length = 0) +
+  
+  theme_bw(base_size=10) + 
+  theme(
+    plot.margin = unit(c(0, 0, 0, 0), "mm"),
+    panel.background = element_blank(),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) + 
+  
+  labs(y="region enrichment FDR (log)",x="dnds q-value (log)")
+
+drivers.pvalues.plot
+ggsave(paste0(basedir, "/results/fig/FIG3A.drivers.pvalues.svg"), plot = 
+       drivers.pvalues.plot  
+, device = "svg",width = 75, height = 75 , units='mm', dpi=72 )
+
+```
+
+## analyze drivers by subtype
+We also compared global signals of selection between the subtypes - although these results were tantalizing, we found the conclusion were extremely inconsistent and the signal could completely flip just by the addition/removal of a couple samples - so this was ultimately removed from the final manuscript.
+
+```{r}
+
+predicted.w.score <- fread(file.path(basedir,'/results/all.eCMS.txt') )
+predicted.w.score <- predicted.w.score %>% filter(`Sample Source(FFPE, FF)` == 'FF')
+
+dndscv_muts.cmsa <- dndscv_muts %>% filter(sampleID %in% predicted.w.score$sample[predicted.w.score$rna_class == 'CMS-A' ])
+dndsout.cmsa = dndscv(dndscv_muts.cmsa, refdb =  dndscv_reference_data_path, cv = NULL)
+
+cmsa.selection <- dndsout.cmsa$sel_cv
+cmsa.annot <- dndsout.cmsa$annotmuts
+
+dndscv_muts.cmsb <- dndscv_muts %>% filter(sampleID %in% predicted.w.score$sample[predicted.w.score$rna_class == 'CMS-B' ])
+dndsout.cmsb = dndscv(dndscv_muts.cmsb, refdb =  dndscv_reference_data_path, cv = NULL)
+
+cmsb.selection <- dndsout.cmsb$sel_cv
+
+cmsa.genes <- cmsa.selection %>% dplyr::select(gene_name, qglobal_cv)
+names(cmsa.genes)[2] <- 'cmsa'
+cmsb.genes <- cmsb.selection %>% dplyr::select(gene_name, qglobal_cv)
+names(cmsb.genes)[2] <- 'cmsb'
+cms.genes <- full_join(cmsa.genes, cmsb.genes, by=c('gene_name'='gene_name'))
+
+cms.genes$type <- NA
+cms.genes$type[cms.genes$cmsa > cms.genes$cmsb] <- 'CMS-A'
+cms.genes$type[cms.genes$cmsa < cms.genes$cmsb] <- 'CMS-B'
+
+cms.drivers.pvalues.plot <- 
+ggplot(cms.genes  %>% filter(gene_name %ni% c('USP8','MN1','PTH2') & (cmsa < 0.99 | cmsb < 0.99)), aes(x=-log(cmsa), y=-log(cmsb))) +
+  geom_abline(color='grey80',intercept = -log(0.05), slope=-1, linetype='dotted')+
+  geom_point(aes(color=type)) +
+  geom_label_repel(aes(label=gene_name, color=type),  data = ~ subset(., cmsa < 0.05 | cmsb < 0.05  ), size=2, max.overlaps =20,
+                   box.padding = 0.75, force = 0.25, max.time = 3,  min.segment.length = 0) +
+  
+  scale_color_manual(  values=c(
+    "CMS-B"    = "#EDA71A" , 
+    "CMS-A" = "#04597C" 
+  )) + theme_bw(base_size=10)+
+  theme(panel.background = element_blank(), 
+        plot.margin = unit(c(0, 0, 0, 0), "mm"),
+        panel.grid = element_blank(), 
+        plot.background = element_blank()) +
+  labs(x='',y='') + guides(color='none')+ 
+  
+  labs(y="CMS-B (log q)",x="CMS-A (log q)")
+
+cms.drivers.pvalues.plot
+
+ggsave(paste0(basedir, "/results/fig/FIGS4a.cms.drivers.pvalues.svg"), plot = 
+  cms.drivers.pvalues.plot         
+, device = "svg",width = 75, height = 75 , units='mm', dpi=72 )
+
+global.cmsa <- dndsout.cmsa$globaldnds
+global.cmsa$rna_class <- 'CMS-A'
+global.cmsb <- dndsout.cmsb$globaldnds
+global.cmsb$rna_class <- 'CMS-B'
+
+global.selection <- rbind.data.frame(global.cmsa, global.cmsb)
+
+ggplot(global.selection , aes(x=name, y=mle, color=rna_class)) +
+  geom_hline(yintercept = 1, color='grey80')+
+  geom_point(position = position_dodge(width=0.2)) +
+  geom_errorbar(aes(ymin = cilow, ymax = cihigh), width = 0.2, position = position_dodge(width=0.2)) +
+  scale_color_manual(  values=c(
+    "CMS-B"    = "#EDA71A" , 
+    "CMS-A" = "#04597C" 
+  )) + theme_bw(base_size=10)+
+  theme(panel.background = element_blank(), 
+        panel.grid = element_blank(), 
+        plot.background = element_blank()) +
+  labs(x='',y='Rate of Adaptation (dN/dS)') + guides(color='none')
+
+write.table(
+  global.selection,
+  file = paste0(basedir, "/results/global.selection.txt"),
+  row.names = FALSE, quote = FALSE, sep = "\t"
+)
+
+```
+
+## test loss-of-heterozygosity
+I think this is a new type of analysis. What we wanted to do originally was rescue tumor suppressor genes that were just under the FDR threshold by showing that there was more LOH at those sites than expected by chance. We actually didn't end up recovering anything this way, but we found interesting results nonetheless. 
+
+```{r}
+gene_set <- fread(file.path(basedir,'/source_data/fgs.txt'))
+gene_set$Chr <- paste0('chr', gene_set$Chr)
+
+genebed <- gene_set
+genebed <- genebed %>% filter(biotype=="protein_coding" & Length >= 500)
+genebed <- genebed %>% dplyr::select(Chr, Start,   End,ensid, gene_name)
+names(genebed) <- c('chrom',	'start',	'end',	'geneid',	'genename')
+
+dnds_annotation <- fread(paste0(basedir, "/results/dnds_annotation.txt"))
+
+get_loh= F
+if(get_loh){
+  
+  hpc_dir = '/Volumes/pcsi/users/fbeaudry/more.data/'
+  all.cnv <- fread(file.path(hpc_dir, 'all.cnv.txt'))
+  length(unique(all.cnv$sampleID))
+  
+  all.cnv$toy.marker <- 1
+  all.cn <- all.cnv %>% dplyr::select(sampleID, chrom,start.pos,end.pos,toy.marker, imean) 
+  names(all.cn) <- c('ID','chrom','loc.start','loc.end','num.mark','seg.mean')
+  
+  all.cnv <- all.cnv %>% dplyr::select(sampleID, chrom,start.pos,end.pos,toy.marker, labels) %>% filter(!is.na(labels))
+  names(all.cnv) <- c('ID','chrom','loc.start','loc.end','num.mark','seg.mean')
+  
+  allele.cn.seg <- CNSeg(all.cnv)
+  allele.cn.gene <- getRS(allele.cn.seg, by="gene", imput=FALSE, XY=FALSE, geneMap=genebed, what="min")
+  gene.allele <- rs(allele.cn.gene)
+  
+  these.genes = intersect(unique(dnds_annotation$gene), gene.allele$genename)
+  
+  rescue_id <- positioned_drivers_dnds$id[positioned_drivers_dnds$element_enriched == T & positioned_drivers_dnds$pglobal_cv < 0.05] 
+  
+  these.genes = intersect(these.genes, rescue_id)
+  
+  
+  first.row = T 
+  for(this.gene in these.genes){
+    
+    this.cn <- gene.allele[gene.allele$genename == this.gene,]
+    if(nrow(this.cn) == 1){
+      
+      this.cn <- as.data.frame(t(this.cn[,-c(1:5)]))
+      names(this.cn) <- 'cn'
+      
+      these.alleles <- separate(this.cn, col = 'cn', into = c('a','b'), sep = '\\.')
+      these.alleles$loh <- F
+      these.alleles$loh[these.alleles$a == 0 | these.alleles$b == 0  ] <- T
+      
+      this.annot <- dnds_annotation[dnds_annotation$gene == this.gene,]
+      these.alleles$hit <- F
+      these.alleles$hit[row.names(these.alleles) %in% this.annot$sampleID] <- T
+      
+      this.table <- these.alleles %>% group_by(loh,hit) %>% tally() %>% reshape2::dcast(formula = loh ~ hit, value.var = 'n', fill = 0  )
+      
+      if(nrow(this.table) * ncol(this.table) == 6){
+        
+        fish.res <- fisher.test(this.table[,-1], conf.int = T)
+        
+        tmp.tbl <- cbind.data.frame('gene'=this.gene, 
+                                    'loh.pvalue'=fish.res$p.value, 
+                                    'loh.TTn'= this.table[2,3],
+                                    'loh.LOR'=log(fish.res$estimate)
+        )
+        
+        if(first.row){
+          loh.hit.table<- tmp.tbl
+          first.row =F 
+        } else {
+          loh.hit.table<- rbind.data.frame(loh.hit.table, tmp.tbl)
+          
+        }
+      }
+    } else {
+      message('two rows with the gene name: ',this.gene)
+    }
+    
+  }
+  loh.hit.table <- loh.hit.table %>% arrange( loh.pvalue)
+  write.table(
+    loh.hit.table,
+    file = file.path(basedir, "/results/loh.p.txt"),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+  
+}
+
+loh.hit.table <- fread(file.path(basedir, "/results/loh.p.txt"))
+
+loh.hit.table$fdr <- p.adjust(loh.hit.table$loh.pvalue, method='fdr')
+loh_sig_id <- loh.hit.table$gene[loh.hit.table$fdr < 0.05 ]
+
+drivers.loh.plot <- 
+ggplot(loh.hit.table, aes(x=loh.LOR, y= -log(fdr))) +
+  
+  geom_hline(yintercept = -log(0.05), color='grey', linetype='dotted')+
+  
+  geom_vline(xintercept = 0, color='grey')+
+  geom_point(size=2.5, color='grey') +  
+  geom_point(size=2.5, data = ~ subset(., gene %in% loh_sig_id)) +  
+  geom_label_repel(aes(label=gene),  data = ~ subset(., gene %in% loh_sig_id), size=2, 
+                   box.padding = 0.5, force = 1, max.time = 3,  min.segment.length = 0) +
+  theme_bw(base_size=10) + 
+  
+  theme(
+    plot.margin = unit(c(0, 0, 0, 0), "mm"),
+    panel.background = element_blank(),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) + labs(x='LOH + mutant odds (log)', y='FDR (-log)')
+
+drivers.loh.plot
+ggsave(paste0(basedir, "/results/fig/FIGS4d.drivers.loh.svg"), plot = 
+         drivers.loh.plot
+, device = "svg",width = 60, height = 75 , units='mm' , dpi=72 )
+
+```
+
+## combine LOH and dnds for table
+
+```{r}
+
+smm.drivrs.analysis <- full_join(positioned_drivers_dnds, loh.hit.table, by=c('id'='gene'))
+
+positioned_drivers_only <- smm.drivrs.analysis[smm.drivrs.analysis$fdr_element_sigfig < 0.05  | 
+                                                 
+                                                 smm.drivrs.analysis$qglobal_cv_sigfig < 0.05 ,]
+
+
+positioned_drivers_only$n_mut <- positioned_drivers_only$n_syn + positioned_drivers_only$n_mis + positioned_drivers_only$n_non +
+  positioned_drivers_only$n_spl + positioned_drivers_only$n_ind 
+
+positioned_drivers_only$loh.fdr <- p.adjust(positioned_drivers_only$loh.pvalue, method = "BH")
+
+
+positioned_drivers_table <- positioned_drivers_only %>% 
+  dplyr::select(id, chr_fac, n_mut, fdr_element_sigfig,  qglobal_cv_sigfig, loh.fdr, loh.TTn) %>% arrange(desc(n_mut))
+
+
+format_sigfig <- function(x, sigfig = 2) {
+  if (is.numeric(x)) {
+    sapply(x, function(val) {
+      if (is.na(val)) return(NA)
+      if (abs(val) < 0.0001 && val != 0) {
+        format(signif(val, sigfig), scientific = TRUE)
+      } else {
+        format(signif(val, sigfig), scientific = FALSE, trim = TRUE)
+      }
+    })
+  } else {
+    x
+  }
+}
+
+
+positioned_drivers_table[] <- lapply(positioned_drivers_table, format_sigfig)
+
+write.table(
+  positioned_drivers_table,
+  file = paste0(basedir, "/results/TableS3.positioned_drivers_table.txt"),
+  row.names = FALSE, quote = FALSE, sep = "\t"
+)
+
+```
+

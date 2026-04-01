@@ -1,0 +1,227 @@
+# Classify fresh frozen RNA by existing transcriptome classifiers
+
+Let's start the good stuff. Here, we run through previously published BTC transcriptomic classifiers, using fresh frozen raw read counts from htseq, to give each tumor a class for each classifier.
+
+## Import, filter and normalize
+
+First, we import the data and filter for fresh frozen cases with high quality, and normalize with DESEQ.
+
+```{r}
+#devtools::install_github("peterawe/CMScaller")
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(CMScaller)
+  library(DESeq2)
+})
+
+packageVersion("CMScaller")
+packageVersion("DESeq2")
+
+`%ni%` <- Negate(`%in%`)
+
+this.seed = 555
+
+basedir = '~/Documents/scripts/github/btc-ccs/'
+secdir = '~/Documents/scripts/github/evolution/'
+
+#### filter for analysis ####
+count_data_df <- fread(file.path(secdir,"/results/rna.htseq.all.txt"))
+
+ncol(count_data_df) - 1
+
+key_tumour_features <- fread(file.path( basedir,'/source_data/BTC_clinical.tumours.tsv'), header = T)
+ffpe_tumours <- na.omit(key_tumour_features$Sample[key_tumour_features$`Sample Source(FFPE, FF)` == 'FFPE' ])
+
+ffpe_tumours <- intersect(ffpe_tumours, names(count_data_df)[-1])
+all_rna.ff <- dplyr::select(count_data_df, -all_of(ffpe_tumours))
+
+ncol(all_rna.ff) - 1
+
+good_sample_list <- fread(file.path( basedir,'/source_data/sample.list.txt'), header=F)
+nrow(good_sample_list)
+
+all_rna.ff <- dplyr::select(all_rna.ff, all_of(c('gene_name',intersect(good_sample_list$V2,names(all_rna.ff)))))
+
+ncol(all_rna.ff) - 1
+
+#### convert ensembl to gene symbols ####
+convert.ensid = F
+if(convert.ensid){
+  gene_set <- fread(file.path(basedir,'/source_data/fgs.txt'))
+  gene_list <- gene_set$ensid 
+  names(gene_list) <- gene_set$gene_name
+  
+  gene_symbols <- gene_list[all_rna.ff$gene_name]
+  all_rna.ff$gene_list <- gene_symbols
+  
+  genes <- all_rna.ff$gene_list
+}
+
+#### filter ####
+
+count_data <- as.matrix(all_rna.ff[,-1])
+rownames(count_data) <- all_rna.ff$gene_name
+
+#remove genes without expression
+count_data <- count_data[rowSums(count_data) != 0,]
+
+saveRDS(object = count_data, file=file.path(secdir,'/results/raw_counts.ff.rds'))
+
+# Create a dummy metadata dataframe with a single "condition" column
+metadata <- data.frame(condition = factor(rep("none", ncol(count_data))),
+                       row.names = colnames(count_data))
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_data,
+  colData = metadata,
+  design = ~ 1  
+)
+dds <- estimateSizeFactors(dds)
+
+normalized_counts <- counts(dds, normalized = TRUE)
+
+saveRDS(object = normalized_counts, file = file.path(secdir,'/results/normalized_counts.ff.rds'))
+
+scaled_counts = CMScaller::ematAdjust(normalized_counts, normMethod = "scale")
+
+```
+
+## Start Classifying
+
+Classifier by classifier, we run classification using nearest template prediction (ntp) from the CMScaller package, keeping assignment for cases where assignment false discovery rate (FDR) is less than 0.05.
+
+### Andersen et al. 2012
+From [Supplementary Table 1](http://dx.doi.org/10.1053/j.gastro.2011.12.005)	
+
+```{r}
+
+andersen.classifier <- fread(file.path(basedir,'/source_data/signatures/andersen_supp.txt'), 
+                             col.names = c('order','probe','p','cv','geom_mean_1','geom_mean_2','ratio','loc','class'), header=T)
+andersen.res = ntp(scaled_counts, andersen.classifier, doPlot=T, nPerm=1000, seed=this.seed)
+andersen.res <- andersen.res %>% mutate(class = ifelse(FDR < 0.05, as.character(prediction), NA))
+names(andersen.res) <- paste0('andersen.',names(andersen.res) )
+
+```
+
+### Sia et al. 2013
+From [Supplementary Table 2](http://dx.doi.org/10.1053/j.gastro.2013.01.001)
+```{r}
+
+sia.classifier <- fread(file.path(basedir,'/source_data/signatures/sia_supp.txt'), col.names = c('probe','class','effectSize'), header=F)
+sia.res = ntp(scaled_counts, sia.classifier, doPlot=T, nPerm=1000, seed=this.seed)
+sia.res <- sia.res %>% mutate(class = ifelse(FDR < 0.05, as.character(prediction), NA))
+names(sia.res) <- paste0('sia.',names(sia.res) )
+
+```
+
+### Ahn et al. 2019
+From [Supplementary Table 1](http://dx.doi.org/10.1007/s12072-019-09954-3)
+```{r}
+ahn.classifier <- fread(file.path(basedir,'/source_data/signatures/ahn_supp.txt'), col.names = c('probe','class'), header=F)
+ahn.res = ntp(scaled_counts, ahn.classifier, doPlot=T, nPerm=1000, seed=this.seed)
+ahn.res <- ahn.res %>% mutate(class = ifelse(FDR < 0.05, as.character(prediction), NA))
+names(ahn.res) <- paste0('ahn.',names(ahn.res) )
+```
+
+### Montal et al. 2020
+From [Table S11](http://dx.doi.org/10.1016/j.jhep.2020.03.008)	
+```{r}
+montal.classifier <- fread(file.path(basedir,'/source_data/signatures/montal_supp.txt'), col.names = c('probe','class'), header=F)
+montal.res = ntp(scaled_counts, montal.classifier, doPlot=T, nPerm=1000, seed=this.seed)
+montal.res <- montal.res %>% mutate(class = ifelse(FDR < 0.05, as.character(prediction), NA))
+names(montal.res) <- paste0('montal.',names(montal.res) )
+```
+
+### Nepal et al. 2021
+From [Table S6](http://dx.doi.org/10.1016/j.jhep.2020.11.033)	
+```{r}
+nepal.classifier <- fread(file.path(basedir,'/source_data/signatures/nepal_supp.txt'), col.names = c('probe','HR','p','survival','diff_1','diff_3','diff_2','class'), header=T)
+nepal.classifier <- nepal.classifier %>% filter(class != '')
+nepal.res = ntp(scaled_counts, nepal.classifier, doPlot=T, nPerm=1000, seed=this.seed)
+nepal.res <- nepal.res %>% mutate(class = ifelse(FDR < 0.05, as.character(prediction), NA))
+names(nepal.res) <- paste0('nepal.',names(nepal.res) )
+```
+
+### O’Rourke et al. 2024
+From [Table S2](http://dx.doi.org/10.1136/gutjnl-2023-330748)	
+
+```{r}
+orourke.rpls.classifier <- fread(file.path(basedir,'/source_data/signatures/orourke_supp.txt'), col.names = c('probe','class'), header=F)
+orourke.rpls.res = ntp(scaled_counts, orourke.rpls.classifier, doPlot=T, nPerm=1000, seed=this.seed)
+orourke.rpls.res <- orourke.rpls.res %>% mutate(class = ifelse(FDR < 0.05, as.character(prediction), NA))
+names(orourke.rpls.res) <- paste0('orourke.',names(orourke.rpls.res) )
+```
+
+### Vijay et al. 2025
+From [Table S5 | RNA_cluster_signature](http://dx.doi.org/10.1101/2024.07.04.601970) (bioRxiv)
+
+```{r}
+vijay.classifier <- fread(file.path(basedir,'/source_data/signatures/vijay_supp.txt'), col.names = c('r','probe','p','effectSize','q','class'), header=T)
+vijay.res = ntp(scaled_counts, vijay.classifier, doPlot=T, nPerm=1000, seed=this.seed)
+vijay.res <- vijay.res %>% mutate(class = ifelse(FDR < 0.05, as.character(prediction), NA))
+names(vijay.res) <- paste0('vijay.',names(vijay.res) )
+```
+
+### Martin-Serrano et al. 2023
+From [supplementary](http://dx.doi.org/10.1136/gutjnl-2021-326514)
+
+```{r}
+martinserrano.classifier <- fread(file.path(basedir,'/source_data/signatures/martinserrano_supp.txt'), col.names = c('probe','class'), header=F)
+martinserrano.res = ntp(scaled_counts, martinserrano.classifier, doPlot=T, nPerm=1000, seed=this.seed)
+martinserrano.res <- martinserrano.res %>% mutate(class = ifelse(FDR < 0.05, as.character(prediction), NA))
+names(martinserrano.res) <- paste0('martinserrano.',names(martinserrano.res) )
+```
+
+### Song G.  et al. 2022
+From [Supplementary Data 5](http://dx.doi.org/10.1038/s41467-022-29164-0)	
+
+```{r}
+song.classifier <- fread(file.path(basedir,'/source_data/signatures/song_supp.txt'), skip = 1)
+names(song.classifier)[names(song.classifier) == 'Gene'] <- 'probe'
+song.classifier$class <- NA
+song.classifier$class[song.classifier$logFC < -1.5 & song.classifier$`P-value` < 0.05] <- 'spp1_pos'
+song.classifier$class[song.classifier$logFC > 1.5 & song.classifier$`P-value` < 0.05] <- 's100p_pos'
+song.classifier <- song.classifier %>% filter(!is.na(class)) %>% dplyr::select(probe, class)
+song.res = ntp(scaled_counts, song.classifier, doPlot=T, nPerm=1000, seed=this.seed)
+song.res <- song.res %>% mutate(class = ifelse(FDR < 0.05, as.character(prediction), NA))
+names(song.res) <- paste0('song.',names(song.res) )
+```
+
+### Fan et al. 2024
+From [Supplementary Figure 7](http://dx.doi.org/10.1038/s41467-024-44748-8)	
+
+```{r}
+fan.classifier <- fread(file.path(basedir,'/source_data/signatures/fan_supp.txt'), col.names = c('probe','class'), header=F)
+fan.res = ntp(scaled_counts, fan.classifier, doPlot=T, nPerm=1000, seed=this.seed)
+fan.res <- fan.res %>% mutate(class = ifelse(FDR < 0.05, as.character(prediction), NA))
+names(fan.res) <- paste0('fan.',names(fan.res) )
+
+```
+
+## Save Results
+
+Then all results are combined and saved from later.
+
+```{r}
+all.res <- cbind.data.frame(
+  fan.res,
+  sia.res,
+  andersen.res,
+  nepal.res,
+  song.res,
+  montal.res,
+  martinserrano.res,
+  vijay.res,
+  orourke.rpls.res,
+  ahn.res
+)
+
+all.res <- cbind.data.frame("Sample"=rownames(all.res), all.res)
+
+write.table(all.res, file = paste0(file.path(basedir,'/results/','classified.FF.txt')), sep = '\t',row.names = F,col.names = T,quote = F)
+
+```
+
+

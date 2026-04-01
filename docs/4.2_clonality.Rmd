@@ -1,0 +1,194 @@
+# Compare clonality between CCS
+Finally, we get to the evolutionary analyses. Clonality is constructed from the consensus between pyclone and mobster. 
+
+## data prep
+```{r}
+
+suppressPackageStartupMessages({
+
+  library(ggplot2)
+  library(PNWColors)
+  library(dplyr)
+  library(data.table)
+  library(vegan) # shannon index
+  
+})
+
+basedir = '~/Documents/scripts/github/btc-ccs/'
+secdir = '~/Documents/scripts/github/evolution/'
+
+sample_list <- read.table(file.path(basedir,'/source_data/sample.list.txt'), header=F)
+
+run.tally=F
+if(run.tally){
+  hpcdir = '/Volumes/pcsi/'
+  
+  first.tumor=T
+  for(tumour_id in sample_list$V2){
+    cat('processing ',tumour_id,'\n')
+    donor_id <- sample_list$V1[sample_list$V2 == tumour_id]
+    
+    evol.file <- paste0(hpcdir,'/users/fbeaudry/more.data/',tumour_id,'/evolution/',tumour_id,'.evolution.txt')
+    
+    if(file.exists(evol.file)){
+      
+      cat('file found\n')
+      evol.data <- fread(evol.file)
+      
+      evol.tally <- evol.data %>% 
+        dplyr::filter(chr %in% paste0('chr',c(1:22)) & (pyclone.prevalence < 0.45 | pyclone.prevalence > 0.55 ) ) %>%
+        group_by(tumour_id, CLS, mobster.cluster, pyclone.rank, call, pyclone.prevalence) %>%  #
+        summarise(n=n(), median.posterior.prob = median(pyclone.prob))
+      
+      evol.tally$rel.size.of.clone <- evol.tally$n / sum(evol.tally$n)
+      evol.tally$tumour_id[is.na(evol.tally$tumour_id)] <- tumour_id
+      
+      if(first.tumor){ full.evol <- evol.tally; first.tumor=F} else {full.evol <- rbind.data.frame(full.evol, evol.tally)}
+      
+      
+    }
+  }
+  
+  write.table(
+    full.evol,
+    file = file.path(basedir,'/results/sample.clonality.txt'),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+}
+
+```
+
+## Quantify and compare clonality statistics
+We remove subclones that are smaller than 2% of mutations and the posterior probability of the clone has to be >50%. We first simply count clones, but then we also compare a scaled measure of diversity, Shannon's Diversity Index.
+
+```{r}
+
+predicted.w.score <- fread(file.path(basedir,'/results/all.eCMS.txt') )
+
+CMSA <- unlist(predicted.w.score %>% filter(rna_class == 'CMS-A') %>% dplyr::select(sample))
+CMSB <- unlist(predicted.w.score %>% filter(rna_class == 'CMS-B') %>% dplyr::select(sample))
+
+
+full.evol <- fread(file.path(basedir,'/results/sample.clonality.txt'))
+length(unique(full.evol$tumour_id))
+
+evol.filt <- full.evol %>% group_by(tumour_id, pyclone.rank) %>% 
+  filter(median.posterior.prob > 0.5 & rel.size.of.clone > 0.02 & !is.na(call))
+
+## mean clones per sample
+clone.n <- tibble(evol.filt) %>% dplyr::select(tumour_id, pyclone.rank) %>% unique() %>% group_by(tumour_id) %>% tally()
+#remove the major clone, which is by definition not subclonal
+table(clone.n$n)
+clone.n$n <- clone.n$n - 1
+clone.n %>% summarise(mean.n = median(n,na.rm=T))
+clone.n %>% summarise(max.n = max(n,na.rm=T))
+clone.n %>% summarise(min.n = min(n,na.rm=T))
+
+clone.n$rna_class <- NA
+clone.n$rna_class[clone.n$tumour_id %in% CMSA] <- 'CMS-A'
+clone.n$rna_class[clone.n$tumour_id %in% CMSB] <- 'CMS-B'
+
+wilcox.test(clone.n$n[clone.n$rna_class == 'CMS-A'],
+            clone.n$n[clone.n$rna_class == 'CMS-B'])
+
+evol.filt$CCF <- round(evol.filt$pyclone.prevalence, 1)
+
+## calculate Shannon Diversity
+clone.proportions <- evol.filt %>% group_by(tumour_id, pyclone.rank) %>% 
+  filter(!is.na(pyclone.rank) & CCF != 0.5 ) %>% summarise(rel.size.of.clone = sum(rel.size.of.clone))
+
+clone.proportions %>% filter(pyclone.rank != 0  ) %>% 
+  ungroup() %>% summarise(mean.size = mean(rel.size.of.clone, na.rm = T))
+
+first.shannon = T
+for(this.tumour in unique(clone.proportions$tumour_id)){
+  subclone_proportions <- clone.proportions$rel.size.of.clone[clone.proportions$tumour_id == this.tumour]
+  shannon_index <- cbind.data.frame('tumour'=this.tumour, 'diversity' = diversity(subclone_proportions, index = "shannon"))
+  if(first.shannon){ith.df <-  shannon_index; first.shannon =F} else {ith.df <-  rbind.data.frame(ith.df,shannon_index)}
+}
+
+ith.df$rna_class[ith.df$tumour %in% CMSA] <- 'CMS-A'
+ith.df$rna_class[ith.df$tumour %in% CMSB] <- 'CMS-B'
+
+wilcox.test(ith.df$diversity[ith.df$rna_class == 'CMS-A'],
+       ith.df$diversity[ith.df$rna_class == 'CMS-B'])
+
+
+ggplot(ith.df %>% filter(!is.na(rna_class)), aes(x=rna_class, y=diversity, color=rna_class)) + 
+
+    ggbeeswarm::geom_quasirandom(
+    aes(group = rna_class),
+    width = 0.2
+  ) +
+  
+  geom_boxplot(
+    aes(
+      
+      group = interaction(rna_class)
+    ),
+    width = 0.45,
+    alpha = 0.5,
+    outlier.shape = NA,   # hide outliers since points are shown
+  ) +     
+  labs(x = 'CCS',y='Clone Diversity (Shannon Index)', color = NULL, fill = NULL)+
+  ylim(0,1.75) + 
+
+
+    scale_color_manual(values = c('CMS-A' = "#04597C", 'CMS-B' = "#EDA71A"), na.value = 'grey85') +
+    scale_fill_manual(values  = c('CMS-A' = "#04597C", 'CMS-B' = "#EDA71A"), na.value = 'grey85') +
+  
+     
+ theme_bw(base_size=10) +
+  theme(
+    plot.margin = unit(c(0, 0, 0, 0), "mm"),
+    
+    panel.grid        = element_blank(),
+    plot.background = element_blank(),
+    panel.background = element_blank(),
+    strip.background  = element_blank(),
+    legend.position   = "top",
+  ) +
+  guides(color='none')+
+  scale_x_discrete(limits = c("CMS-B", "CMS-A"),labels=c("B",'A')) 
+
+
+```
+
+## Where in the cancer cell fraction spectrum is the difference? 
+
+```{r}
+
+evol.filt$pyclone.prevalence[evol.filt$call == 'Clonal'] <- 1
+   
+evol.filt$rna_class <- NA
+evol.filt$rna_class[evol.filt$tumour_id %in% CMSA] <- 'CMS-A'
+evol.filt$rna_class[evol.filt$tumour_id %in% CMSB] <- 'CMS-B'
+
+clone.size.bin <- evol.filt %>% 
+  group_by(rna_class, CCF) %>% filter( CCF != 0.5) %>%
+  summarise(mean.size = mean(rel.size.of.clone), bin.size=n())
+
+ith.bin.plot <- 
+ggplot(clone.size.bin %>% filter(!is.na(rna_class) ), aes(x=CCF, y=mean.size*100, color=rna_class)) +
+  geom_area(aes(group=rna_class, fill=rna_class), position = "identity", alpha=0.2 )+
+  geom_line(aes(group=rna_class))+
+  geom_point()+
+  scale_fill_manual(values = pnw_palette(name="Bay", n=30)[c(3,20)], na.value = 'grey90') +
+  scale_color_manual(values = pnw_palette(name="Bay", n=30)[c(3,20)], na.value = 'grey90') +
+  theme_bw(base_size=10)+
+  scale_x_reverse(breaks=c(1,0.8,0.6,0.4,0.2,0)) + guides(fill='none',color='none')+
+  theme(panel.grid = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = unit(c(0, 0, 0, 0), "mm"),
+        
+        ) + 
+  labs(x='Cancer cell fraction',y='% of variants')
+
+ith.bin.plot
+
+ggsave(file.path( basedir,"/results/fig/FIG5d.ith.bin.svg"),plot =
+  ith.bin.plot
+, device = "svg", width = 45, height = 52, units = 'mm', dpi=72 )
+
+```

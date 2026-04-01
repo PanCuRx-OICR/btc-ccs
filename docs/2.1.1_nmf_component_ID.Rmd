@@ -1,0 +1,729 @@
+# Biological Interpretation of NMF components
+This is the fun part. We've optimized these highly abstracted gene sets, now we figure out what the heck we've isolated. This is another spot where our tumour-informed optimization outperforms the biologically informed approach: we have made very few assumptions about cell-types to get here, so our biological interpretation should not be (as) biased.
+
+## Data intake
+Start by normalizing the W and H matrices for interpretation
+```{r}
+
+suppressPackageStartupMessages({
+
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(tibble)
+library(reshape2)
+library(pvclust)
+library(msigdbr)
+library(gprofiler2)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(enrichplot)
+library(cowplot)
+library(ggplot2)
+#library(mclust)
+library(PNWColors)
+  
+})
+
+packageVersion('clusterProfiler')
+
+basedir = '~/Documents/scripts/github/btc-ccs/'
+secdir = '~/Documents/scripts/github/evolution/'
+source( file.path(basedir, "bin/BTC.functions.R"))
+base_font_size = 10
+
+gene_set <- fread(file.path(basedir,'/source_data/fgs.txt'))
+gene_set$kb <- gene_set$Length / 1000
+
+gene_vec <- gene_set$ensid
+names(gene_vec) <- gene_set$gene_name
+gene_kb <- gene_set$kb
+names(gene_kb) <- gene_set$ensid
+
+
+## pull from results/
+W_matrix <- read.csv(file.path(basedir,'/results/W_matrix.txt'), row.names= 1)
+H_matrix <- read.csv(file.path(basedir,'/results/H_matrix.txt'), row.names = 1)
+
+## count gene and component from W and H
+gene_n = nrow(W_matrix)
+component_n = nrow(H_matrix)
+
+rownames(W_matrix) <- gene_vec[rownames(W_matrix)]
+
+predicted.w.score <- fread(file.path(basedir,'/results/cmstsp.class.txt'))
+nmf.stats <- fread(file.path(basedir,'/results/nmf.stats.txt')) %>% filter(genes == gene_n & k == component_n) 
+
+tpm_data <- exp(W_matrix) - 1
+
+tpm_data <- tpm_data / gene_kb[rownames(W_matrix)]
+scaling_factors <- colSums(tpm_data)
+tpm_data <- (tpm_data/ scaling_factors) *  1e6
+tpm_data <- log(tpm_data + 1)
+
+H_matrix_ordered_norm <-   data.frame(t(apply(H_matrix, 1, scale)))
+names(H_matrix_ordered_norm) <- names(H_matrix)
+
+H_matrix_ordered_norm.df <- data.table(H_matrix_ordered_norm)
+H_matrix_ordered_norm.df$sig.id <- paste0('sig', row.names(H_matrix_ordered_norm))
+
+H_matrix_ordered_norm.melt <- melt(H_matrix_ordered_norm.df, id.vars ='sig.id') 
+```
+
+## Correlations between components
+How often do our signatures show up together (or tend to be exclusive)? Since the "names" of the signatures until now are arbitrary, we rename the signatures here such that correlated signatures are closer numerically. That's how we end up with the two CCS-B signatures close numerically, and this also results in a numerical distance between CCS-A and CCS-B signatures. We'll save this signature "conversion" key for later. 
+
+```{r}
+# Compute pairwise correlations between rows
+cor_matrix <- cor(t(H_matrix_ordered_norm) )
+
+pvclust.result <- pvclust(t(cor_matrix), method.hclust = 'complete' ) 
+plot(pvclust.result )
+pvrect(pvclust.result, alpha=0.90)
+
+order_vec <- rev(pvclust.result$hclust$labels[pvclust.result$hclust$order])
+y_order <- rev(paste0('sig',rev(pvclust.result$hclust$labels[pvclust.result$hclust$order])))
+
+cor_with_p <- function(x) {
+  n <- ncol(x)
+  cor_mat <- matrix(NA, n, n)
+  p_mat <- matrix(NA, n, n)
+  colnames(cor_mat) <- colnames(x)
+  rownames(cor_mat) <- colnames(x)
+  colnames(p_mat) <- colnames(x)
+  rownames(p_mat) <- colnames(x)
+  
+  for (i in 1:n) {
+    for (j in 1:n) {
+      test <- cor.test(x[, i], x[, j])
+      cor_mat[i, j] <- test$estimate
+      p_mat[i, j] <- test$p.value
+    }
+  }
+  
+  cor_mat[p_mat > 0.05] <- NA  
+  return(cor_mat)
+}
+
+cor_matrix <- cor_with_p(t(H_matrix_ordered_norm))
+
+cor_matrix <- cor_matrix[order_vec, order_vec]
+
+cor_matrix[lower.tri(cor_matrix, diag = TRUE)] <- NA
+
+cor_df <- data.frame(cor_matrix)
+names(cor_df) <- gsub('X','sig',names(cor_df))
+cor_df$sig.id <- paste0('sig',rownames(cor_matrix))
+
+cor_melt <- reshape2::melt(cor_df, id.vars='sig.id')
+cor_melt$sig <- factor(cor_melt$sig, levels = paste0('sig',rev(pvclust.result$hclust$labels[pvclust.result$hclust$order])))
+cor_melt$variable <- factor(cor_melt$variable, levels = paste0('sig',pvclust.result$hclust$labels[pvclust.result$hclust$order]))
+
+cor_melt_filt <- cor_melt %>% filter(!is.na(value))
+cor_melt_filt <- left_join(data.frame('sig.id'=paste0('sig',c(1:component_n))), cor_melt_filt, by='sig.id') 
+
+unique_corrs <- length(na.omit(unique(cor_melt_filt$sig)))
+
+print(cor_melt_filt[,c(1,2)])
+
+cor_melt_filt$cor.bin <- NA
+cor_melt_filt$cor.bin[cor_melt_filt$value > 0 ] <- 'up'
+cor_melt_filt$cor.bin[cor_melt_filt$value < 0 ] <- 'down'
+
+
+cor_plot <- 
+  ggplot(cor_melt_filt, aes(x=sig, y=variable) )+ 
+  
+  geom_point(aes(size=value,color=value, shape=cor.bin))   +
+  scale_color_gradient2(
+    low = "darkblue",
+    mid = "white",
+    high = "darkred",
+    limits = c(-0.5, 0.5),
+    midpoint = 0
+    
+  ) +
+  scale_shape_manual(values= c('up'=24,'down'=25))+
+  guides(size='none',shape='none',color='none')+
+  theme_bw(base_size=10)+  
+  theme( 
+    
+    axis.ticks.y = element_blank(), 
+    axis.title = element_blank(),
+
+    axis.text.x = element_text(angle = -45, hjust = 0),
+    plot.background = element_blank(), legend.position = 'top'
+  ) +
+  scale_y_discrete(limits = y_order) +
+  scale_x_discrete(na.translate = FALSE )+
+  scale_size_continuous(range = c(0.5, 3))  
+
+cor_plot
+
+#cor_plot <- cor_plot + theme(axis.text.y = element_blank())
+
+y_order.convert <- cbind.data.frame('og'=y_order, 'new'=paste0('sig.',c(length(y_order):1)))
+y_order.convert$new <- factor(y_order.convert$new, levels = paste0('sig.',c(length(y_order):1)))
+
+write.table( y_order.convert,  
+             file = file.path(basedir,'/results/NMF.conversion.txt'), 
+             row.names = F,col.names = T, quote = FALSE, sep = "\t", append =F)
+```
+## external duct sets
+Let's augment our interpretation using biliary tract cell lineage markers identified by previous single-cell RNAseq studies of healthy tissue. We are going to use the data from [Sampaziotis et al 2021](https://pubmed.ncbi.nlm.nih.gov/33602855/), [Rimland et al 2021](onlinelibrary.wiley.com/doi/10.1002/hep.31252/suppinfo), and [Andrews et al 2024](https://doi.org/10.1016/j.jhep.2023.12.023).
+
+
+```{r}
+x_top_angle = 40
+
+sampaziotis_2021_tableS1 <- fread(file.path(basedir,'/source_data/sampaziotis_2021_tableS1.txt'), header=T)
+sampaziotis_2021_tableS1 <- left_join(sampaziotis_2021_tableS1, gene_set, by=c('Gene_name'='gene_name'), relationship =  "many-to-many")
+sampaziotis_gene_sets <- sampaziotis_2021_tableS1 %>% dplyr::select(Region, ensid) %>% filter(!is.na(ensid))
+sampaziotis_gene_sets$Region <- paste0("sampaziotis.",sampaziotis_gene_sets$Region)
+
+rimland_2021_tableS2 <- fread(file.path(basedir,'/source_data/rimland_2021_tableS2.txt'), header=T)
+rimland_gene_sets <- rimland_2021_tableS2 %>% dplyr::select(V3, `ENSG ID`)
+rimland_gene_sets$V3 <- paste0("rimland.",rimland_gene_sets$V3)
+names(rimland_gene_sets) <- names(sampaziotis_gene_sets)
+
+andrews2024_tableS10_sn <- fread(file.path(basedir,'/source_data/andrews_tableS10_sn.celltypemarkers.txt'), header=T)
+andrews2024_tableS10_sn <- andrews2024_tableS10_sn %>% filter(avg_logFC > 0)
+andrews2024_tableS10_sn <- left_join(andrews2024_tableS10_sn, gene_set, by=c('gene'='gene_name'), relationship =  "many-to-many")
+andrews2024sn_gene_sets <- andrews2024_tableS10_sn %>% dplyr::select(cluster, ensid) %>% filter(!is.na(ensid)) %>%
+  filter(!apply(., 1, function(row) any(str_detect(row, "Doublet"))))
+
+names(andrews2024sn_gene_sets) <- names(sampaziotis_gene_sets)
+
+duct.gene.set <- rbind.data.frame(sampaziotis_gene_sets, rimland_gene_sets, andrews2024sn_gene_sets)
+
+first.loop = T
+for(this.sig in c(1:ncol(W_matrix)) ){
+  
+  cat('--\n\n',this.sig,"\n")
+  this.sig.w <- W_matrix[,this.sig]
+  names(this.sig.w) <- rownames(W_matrix)
+  these_ranked_genes <- sort(this.sig.w, decreasing = TRUE)
+  
+  #hist(these_ranked_genes)
+  
+  gsea_result <- GSEA(geneList = these_ranked_genes,
+                      TERM2GENE = duct.gene.set,
+                      scoreType = "pos",
+                      pvalueCutoff = 0.05)
+  
+  if(nrow(gsea_result@result) > 0){
+    gsea.df <- gsea_result@result[,c(1:10)]
+    gsea.df$sig.id <- paste0('sig',this.sig)
+    if(first.loop){chol.gsea <- gsea.df; first.loop=F}else{chol.gsea <- rbind.data.frame(chol.gsea,gsea.df)}
+    
+  }
+}
+
+#filter for multiple testing
+cms.gsea <- chol.gsea[chol.gsea$p.adjust < ( 0.05 / component_n), ]
+
+
+chol.gsea.full <- left_join(data.frame('sig.id'=paste0('sig',c(1:component_n))), chol.gsea, by=c('sig.id'='sig.id')) 
+#chol.gsea.full <- chol.gsea.full %>% filter(Description %ni% c("cvLSEC--Mac"))
+
+
+chol.gsea.full$Study <- 'Andrews et al.' 
+chol.gsea.full$Study[chol.gsea.full$Description %in% c('rimland.CBD','rimland.GBD','rimland.PancD')] <- 'Rimland et al.' 
+chol.gsea.full$Study[chol.gsea.full$Description %in% c('sampaziotis.CBD','sampaziotis.GB','sampaziotis.IHD')] <- 'Sampaziotis et al.' 
+
+chol.gsea.full$p.adjust.multi <- chol.gsea.full$p.adjust * component_n * length(unique(chol.gsea.full$Description))
+chol.gsea.full$p.adjust.multi[chol.gsea.full$p.adjust.multi > 0.05] <- 1
+
+chol.gsea.full <- chol.gsea.full %>% filter(p.adjust.multi != 1)
+chol.gsea.full <- left_join(data.frame('sig.id'=paste0('sig',c(1:component_n))), chol.gsea.full, by=c('sig.id'='sig.id')) 
+chol.gsea.full$Study[is.na(chol.gsea.full$Study)] <- 'Andrews et al.' 
+
+
+unique_cholangios <- length(unique(chol.gsea.full$Description))
+
+chol.gsea.trim <- chol.gsea.full
+chol.gsea.trim <- left_join(chol.gsea.trim, y_order.convert, by=c('sig.id'='og'))
+scrna.grid <- expand.grid(x = chol.gsea.trim$Description, y = levels(chol.gsea.trim$new))
+
+ggplot(chol.gsea.trim, aes(x=Description, y=new)) + 
+
+  geom_tile(data = scrna.grid, aes(x = x, y = y), fill = "white", color = "grey") +
+  
+  geom_point(aes(color=Study, size=-log(p.adjust))) +   
+  
+  theme_bw(base_size = base_font_size)+ 
+  scale_size(range = c(0.5,2.5))   +
+  guides(size='none',shape='none')+
+  scale_color_manual(values =  pnw_palette(name="Sailboat", n=length(unique(chol.gsea.trim$Study)) )) +
+  
+  theme(axis.text.x = element_text(angle = x_top_angle, hjust = 0),
+        panel.grid = element_blank(),
+        axis.title = element_blank(), 
+        axis.ticks = element_blank(),
+        panel.spacing = unit(0, "lines"), 
+        plot.background = element_blank(), 
+        panel.border = element_blank(),
+        strip.background = element_blank(),     
+        strip.text = element_text(color = "black"),
+        legend.position = 'bottom',
+        legend.background = element_blank(),
+        legend.text = element_text(size = 6), 
+        legend.key.size = unit(0.5, "lines"),     
+        legend.title = element_blank()) + 
+  theme() +
+  guides(color = guide_legend(nrow = 3))+
+  
+  scale_x_discrete(position = "top", na.translate = FALSE)
+
+
+## curate
+chol.gsea.trim$cell <- NA
+
+chol.gsea.trim$cell[chol.gsea.trim$Description == 'P-Hepato2'] <- 'Hepatocyte'
+
+chol.gsea.trim$cell[chol.gsea.trim$Description == 'sampaziotis.IHD'] <- 'Intrahepatic Duct'
+chol.gsea.trim$cell[chol.gsea.trim$Description == 'sampaziotis.CBD'] <- 'Common Bile Duct'
+
+chol.gsea.trim$cell[chol.gsea.trim$Description == 'rimland.PancD'] <- 'Pancreas Duct'
+
+chol.gsea.hits <- chol.gsea.trim[!is.na(chol.gsea.trim$cell),]
+
+unique_sc_celltypes <- unique(chol.gsea.hits$cell[order(chol.gsea.hits$new, decreasing = T)])
+sorted_celltypes <- chol.gsea.hits$cell[order(chol.gsea.hits$new, decreasing = T)]
+first_indices <- match(unique_sc_celltypes, sorted_celltypes)
+
+chol.gsea.trim$cell.f <- factor(chol.gsea.trim$cell, levels = sorted_celltypes[first_indices])
+
+
+scrna.grid <- expand.grid(x = levels(chol.gsea.trim$cell.f), y = levels(chol.gsea.trim$new))
+
+scrna.match.plot <- 
+  ggplot(chol.gsea.trim, aes(x=cell.f, y=new)) + 
+  facet_wrap('scRNA markers' ~., strip.position = "bottom")+
+    # facet_grid(.~Study, space='free',scales='free')+
+  geom_tile(data = scrna.grid, aes(x = x, y = y), fill = "white", color = "grey") +
+  
+    geom_point(aes(size=-log(p.adjust))) +   
+  
+    theme_bw(base_size = base_font_size)+ 
+  scale_size(range = c(0.5,2.5), limits = c(5,40))  +
+  guides(size='none',shape='none')+
+    scale_color_manual(values =  pnw_palette(name="Sailboat", n=length(unique(chol.gsea.trim$Study)) )) +
+    
+    theme(axis.text.x = element_text(angle = x_top_angle, hjust = 0),
+          panel.grid = element_blank(),
+          axis.title = element_blank(), 
+          axis.ticks = element_blank(),
+          axis.text.y = element_blank(), 
+          panel.spacing = unit(0, "lines"), 
+          plot.background = element_blank(), 
+          panel.border = element_blank(),
+          strip.background = element_blank(),     
+          strip.text = element_text(color = "black"),
+          legend.position = 'bottom',
+          legend.background = element_blank(),
+          legend.text = element_text(size = 6), 
+          legend.key.size = unit(0.5, "lines"),     
+          legend.title = element_blank()) + 
+    theme() +
+    guides(color = guide_legend(nrow = 3))+
+  
+    scale_x_discrete(position = "top", na.translate = FALSE)
+  
+chol.gsea.trim %>% filter(!is.na(cell.f))
+
+```
+
+## Human Protein Archive
+How do our markers compare to protein expression by tissue from the [Human Protein Atlas](https://www.proteinatlas.org/)?
+
+```{r}
+tissues.matches <- nmf.stats %>% 
+  dplyr::select(sig.id, top.tissue, top.tissue.p, top.tissue.precision, top.tissue.recall )
+
+tissues.matches.melt <- 
+  separate(tissues.matches, top.tissue, into = c('top.tissue.1','top.tissue.2','top.tissue.3'), sep = "-") %>% 
+  separate( top.tissue.p, into = c('top.tissue.1.p','top.tissue.2.p','top.tissue.3.p'), sep = ";") %>% 
+  separate(top.tissue.precision, into = c('top.tissue.1.precision','top.tissue.2.precision','top.tissue.3.precision'), sep = ";") %>% 
+  separate( top.tissue.recall, into = c('top.tissue.1.recall','top.tissue.2.recall','top.tissue.3.recall'), sep = ";") %>%
+  
+  reshape2::melt(id.vars=c('sig.id'))  %>% 
+  separate( variable, into = c('top','tissue','hit','var'), sep = "\\.")
+
+tissues.matches.melt$var[is.na(tissues.matches.melt$var)] <- 'tissue'
+
+tissues.matches.df <- reshape2::dcast(data = tissues.matches.melt, formula = sig.id + hit ~ var) 
+
+tissues.matches.df <- separate(tissues.matches.df, tissue, into = c('tissuetype','celltype'), sep = "; ", remove = F)
+tissues.matches.df$celltype <- gsub('\\[\\≥Medium\\]','',tissues.matches.df$celltype)
+tissues.matches.df$celltype <- gsub('\\[\\≥Low\\]','',tissues.matches.df$celltype)
+tissues.matches.df$celltype <- gsub('\\[High]','',tissues.matches.df$celltype)
+
+
+tissues.matches.df <- left_join(data.frame('sig.id'=paste0('sig',c(1:component_n))), tissues.matches.df %>% 
+                                  filter(hit %in% c(1)), by=c('sig.id'='sig.id')) 
+
+tissues.matches.df$tissuetype[tissues.matches.df$tissuetype %in% c('Skin 1','Skin 2')] <- 'Skin'
+tissues.matches.df$celltype <- gsub(" \\(cell body\\)","",tissues.matches.df$celltype)
+
+unique_tissues <- length(unique(tissues.matches.df$celltype))
+print(tissues.matches.df[,c(7,1)])
+
+hpa.trim <- tissues.matches.df
+hpa.trim <- left_join(hpa.trim, y_order.convert, by=c('sig.id'='og'))
+hpa.grid <- expand.grid(x = hpa.trim$celltype, y = levels(hpa.trim$new))
+
+ggplot(hpa.trim , aes(x=celltype, y=new)) +
+  facet_wrap('HPA'~., strip.position = "bottom")+
+  geom_tile(data = hpa.grid, aes(x = x, y = y), fill = "white", color = "grey") +
+  geom_point(aes(color=tissuetype, size=-log(as.numeric(p))))+
+  
+  scale_x_discrete(position = "top", na.translate = FALSE)+
+  theme_bw(base_size = base_font_size)+
+  scale_size(range = c(0.5,2.5))  +
+  scale_color_manual(values =  pnw_palette(name="Anemone", n=length(unique(hpa.trim$tissuetype)) ), na.translate = FALSE) +
+  guides(size='none',shape='none')+
+  theme(axis.text.x = element_text(angle = x_top_angle, hjust = 0),
+        
+        strip.background = element_blank(),     
+        strip.text = element_text(color = "black"),
+        axis.ticks = element_blank(),
+        
+        plot.background = element_blank(), 
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        legend.background = element_blank(),
+        legend.text = element_text(size = 6), 
+        legend.key.size = unit(0.5, "lines"),     
+        legend.title = element_blank(),
+        panel.border = element_blank(),
+        axis.title = element_blank(), 
+
+  )+
+  guides(color = guide_legend(nrow = 3))  
+
+
+## curate
+hpa.trim$cell <- NA
+
+hpa.trim$cell[hpa.trim$celltype == 'hepatocytes'] <- 'Hepatocytes'
+hpa.trim$cell[hpa.trim$celltype == 'goblet cells'] <- 'Goblet cells'
+hpa.trim$cell[hpa.trim$celltype == 'enterocytes '] <- 'Enterocytes'
+hpa.trim$cell[hpa.trim$celltype %in% c('proximal tubules','proximal tubules (microvilli)')] <- 'Kidney tubules'
+
+
+hpa.hits <- hpa.trim[!is.na(hpa.trim$cell),]
+
+unique_hpa_celltypes <- unique(hpa.hits$cell[order(hpa.hits$new, decreasing = T)])
+sorted_celltypes <- hpa.hits$cell[order(hpa.hits$new, decreasing = T)]
+first_indices <- match(unique_hpa_celltypes, sorted_celltypes)
+
+hpa.trim$cell.f <- factor(hpa.trim$cell, levels = sorted_celltypes[first_indices])
+
+hpa.trim$tissuetype[is.na(hpa.trim$cell.f)] <- NA
+
+hpa.grid <- expand.grid(x = levels(hpa.trim$cell.f), y = levels(hpa.trim$new))
+
+hpa.match.plot <- 
+ggplot(hpa.trim , aes(x=cell.f, y=new)) +
+  facet_wrap('HPA'~., strip.position = "bottom")+
+  geom_tile(data = hpa.grid, aes(x = x, y = y), fill = "white", color = "grey") +
+  geom_point(aes( size=-log(as.numeric(p))))+
+  
+  scale_x_discrete(position = "top", na.translate = FALSE)+
+  theme_bw(base_size = base_font_size)+
+  scale_size(range = c(0.5,2.5), limits = c(5,40))  +
+  scale_color_manual(values =  pnw_palette(name="Anemone", n=length(unique(hpa.trim$tissuetype)) ), na.translate = FALSE) +
+  guides(size='none',shape='none')+
+  theme(axis.text.x = element_text(angle = x_top_angle, hjust = 0),
+        
+        strip.background = element_blank(),     
+        strip.text = element_text(color = "black"),
+        axis.ticks = element_blank(),
+        
+        plot.background = element_blank(), 
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        legend.background = element_blank(),
+        legend.text = element_text(size = 6), 
+        legend.key.size = unit(0.5, "lines"),     
+        legend.title = element_blank(),
+        panel.border = element_blank(),
+        axis.title = element_blank(), 
+        axis.text.y = element_blank() 
+  )+
+  guides(color = guide_legend(nrow = 3))  
+
+```
+
+## Immune cell decomposition
+How do our components compare to decomposition designed specifically to isolate immune cell signature (from CIBERSORT)?
+
+```{r}
+LBR.cibersort <- fread(file.path(basedir,"/results/LBR.cibersort.txt")) %>% melt(id.vars='cell_type')
+
+first.loop = T
+## loop across components/signnatures
+for(this.sig in unique(H_matrix_ordered_norm.melt$sig.id)){
+  
+  ## filter for weight higher than median (zero, after scale)
+  this.sig.w <- H_matrix_ordered_norm.melt %>% 
+    filter(sig.id == this.sig  ) %>% left_join(LBR.cibersort, by=c('variable'='variable')) %>%
+    filter(!is.na(cell_type))
+  
+  for(this.cell.type in unique(this.sig.w$cell_type)){
+    
+    this.cell.type.w <- this.sig.w %>% 
+      filter(cell_type == this.cell.type  ) 
+    
+    ## calculate correaltion between sig weight and cellularity
+    this.cor <- cor.test(this.cell.type.w$value.x, this.cell.type.w$value.y)
+    
+    
+    ## make row
+    this.cor <- cbind.data.frame(
+      'sig.id'=this.sig,
+      'cell.type'=this.cell.type,
+      'cor'=this.cor$estimate,
+      'cor.p'=this.cor$p.value
+    )
+    
+    if(first.loop){immune.cor <- this.cor; first.loop=F}else{immune.cor <- rbind.data.frame(immune.cor,this.cor)}
+  }
+}
+
+immune.cor$cor.p.nulled <- immune.cor$cor.p 
+
+#multiple testing correction
+immune.cor$cor.p.nulled[immune.cor$cor.p > 0.05 / length(unique(immune.cor$sig.id)) ] <- 1
+
+immune.cor.filt <- immune.cor %>% filter(cor.p.nulled != 1)
+
+
+immune.cor.filt <- left_join(data.frame('sig.id'=paste0('sig',c(1:component_n))), immune.cor.filt, by=c('sig.id'='sig.id')) 
+
+unique_immune <- length(unique(immune.cor.filt$cell.type))
+
+immune.cor.filt$Cell.type <- immune.cor.filt$cell.type
+
+immune.cor.filt$cor.bin <- NA
+immune.cor.filt$cor.bin[immune.cor.filt$cor > 0 ] <- 'up'
+immune.cor.filt$cor.bin[immune.cor.filt$cor < 0 ] <- 'down'
+
+immune.trim <- immune.cor.filt
+immune.trim <- left_join(immune.trim, y_order.convert, by=c('sig.id'='og'))
+immune.grid <- expand.grid(x = immune.trim$Cell.type, y = levels(immune.trim$new))
+
+nmf.cibsersort.plot <- 
+ggplot(immune.trim , aes(x=Cell.type, y=new)) +
+ 
+  geom_tile(data = immune.grid, aes(x = x, y = y), fill = "white", color = "grey") +
+  geom_point(color='black', fill='black', aes(size=-log(as.numeric(cor.p.nulled))))+
+  
+  scale_x_discrete(position = "top", na.translate = FALSE)+
+  theme_bw(base_size = base_font_size)+
+
+  scale_size(range = c(0.5,2.5), limits = c(5,25))  +
+  
+  guides(shape='none')+
+  theme(
+        axis.text.x = element_text(angle = x_top_angle, hjust = 0),
+        plot.margin = unit(c(0, 10, 0, 0), "mm"),
+        strip.background = element_blank(),     
+        strip.text = element_text(color = "black"),
+        axis.ticks = element_blank(),
+        
+        plot.background = element_blank(), 
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        legend.background = element_blank(),
+        legend.text = element_text(size = 6), 
+        legend.key.size = unit(0.5, "lines"),     
+        legend.title = element_blank(),
+        panel.border = element_blank(),
+        axis.title = element_blank()
+  )+
+  guides(color = guide_legend(nrow = 3))  
+
+nmf.cibsersort.plot
+
+ggsave(paste0(basedir, "/results/fig/FIGS3c.nmf.cibsersort.svg"),plot =
+nmf.cibsersort.plot
+, device = "svg", height = 65, width = 75, units = 'mm',dpi=72 )
+
+## curate
+immune.trim$cell <- NA
+
+immune.trim$cell[immune.trim$Cell.type == 'T cell CD8+'] <- 'CD8+ T cell'
+
+immune.hits <- immune.trim[!is.na(immune.trim$cell),]
+
+unique_immune_celltypes <- unique(immune.hits$cell[order(immune.hits$new, decreasing = T)])
+sorted_celltypes <- immune.hits$cell[order(immune.hits$new, decreasing = T)]
+first_indices <- match(unique_immune_celltypes, sorted_celltypes)
+
+immune.trim$cell.f <- factor(immune.trim$cell, levels = sorted_celltypes[first_indices])
+
+immune.grid <- expand.grid(x = levels(immune.trim$cell.f), y = levels(immune.trim$new))
+
+immune.cor.plot <- 
+ggplot(immune.trim , aes(x=cell.f, y=new)) +
+  geom_tile(data = immune.grid, aes(x = x, y = y), fill = "white", color = "grey") +
+  geom_point(color='black', fill='black', aes(shape=cor.bin, size=-log(as.numeric(cor.p.nulled))))+
+  
+  scale_x_discrete(position = "top", na.translate = FALSE)+
+  theme_bw(base_size = base_font_size)+
+  scale_size(range = c(0.5,2.5), limits = c(5,40))  +
+  scale_shape_manual(values= c('up'=16,'down'=16))+
+  
+  guides(size='none',shape='none')+
+  theme(axis.text.x = element_text(angle = x_top_angle, hjust = 0),
+        
+        strip.background = element_blank(),     
+        strip.text = element_text(color = "black"),
+        axis.ticks = element_blank(),
+        
+        plot.background = element_blank(), 
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        legend.background = element_blank(),
+        legend.text = element_text(size = 6), 
+        legend.key.size = unit(0.5, "lines"),     
+        legend.title = element_blank(),
+        panel.border = element_blank(),
+        axis.title = element_blank(), 
+        axis.text.y = element_blank() 
+  )+
+  guides(color = guide_legend(nrow = 3))  
+
+```
+
+## CCS markers from TSP
+So far we've used well defined signals (known signatures) to identify our components. Next, we use the genes from the TSP defining our CCS.
+
+```{r}
+tsp.genes <- fread(file.path(basedir,'/results/tsp.genes.txt'))
+tsp.genes$gene <- 'gene'
+tsp.genes <- melt(tsp.genes, id.vars = 'gene') %>% left_join(gene_set,by=c('value'='gene_name')) %>% dplyr::select(variable, ensid)
+
+first.loop = T
+cms.gsea <- NULL
+for(this.sig in c(1:ncol(W_matrix)) ){
+  
+  cat('--\n\n',this.sig,"\n")
+  this.sig.w <- W_matrix[,this.sig]
+  names(this.sig.w) <- rownames(W_matrix)
+  these_ranked_genes <- sort(this.sig.w, decreasing = TRUE)
+  
+  
+  
+  gsea_result <- GSEA(geneList = these_ranked_genes,
+                      TERM2GENE = tsp.genes,
+                      verbose = T,
+                      
+                      scoreType = "pos", minGSSize = 10,
+                      pvalueCutoff = 0.05)
+  
+  
+  gseaplot2(gsea_result, geneSetID = "CMS-A")
+  gseaplot2(gsea_result, geneSetID = "CMS-B")
+  
+  if(nrow(gsea_result@result) > 0){
+    gsea.df <- gsea_result@result[,c(1:10)]
+    gsea.df$sig.id <- paste0('sig',this.sig)
+    if(first.loop){cms.gsea <- gsea.df; first.loop=F}else{cms.gsea <- rbind.data.frame(cms.gsea,gsea.df)}
+    
+  }
+}
+
+#filter for multiple testing
+cms.gsea <- cms.gsea[cms.gsea$p.adjust < ( 0.05 / component_n), ]
+
+if(!is.null(cms.gsea)){
+  
+  cms.gsea.full <- left_join(data.frame('sig.id'=paste0('sig',c(1:component_n))), cms.gsea, by=c('sig.id'='sig.id')) 
+  print(cms.gsea.full[,c(2,1)])
+  
+  cms.gsea.full <- left_join(cms.gsea.full, y_order.convert, by=c('sig.id'='og'))
+  
+  cms.grid <- expand.grid(x = cms.gsea.full$Description, y = cms.gsea.full$new)
+  
+  
+  
+  cms.plot <- 
+    ggplot(cms.gsea.full, aes(x=Description, y=new)) + 
+    geom_tile(data = cms.grid, aes(x = x, y = y), fill = "white", color = "grey") +
+    
+
+    geom_point(aes(color=Description , size=-log(p.adjust)))+
+    scale_color_manual(values = c(
+      "CMS-B"    = "#EDA71A" , 
+      "CMS-A" = "#04597C" 
+    )) +   
+  #  scale_y_discrete(limits = y_order) +
+    guides(shape='none',color='none')+
+      scale_x_discrete(position = "top", na.translate = FALSE)+
+
+    theme_bw(base_size = base_font_size)+ 
+    scale_size(range = c(0.5,2.5), limits = c(5,40))  +
+    theme(
+      axis.text.x = element_text(angle = x_top_angle, hjust = 0), 
+      axis.text.y = element_blank(), 
+      axis.title = element_blank(),
+      panel.border = element_blank(),
+      panel.grid = element_blank(),
+      legend.key.size = unit(0.4, "cm"),   # Shrinks the legend keys (symbols)
+      legend.text = element_text(size = 8), # Shrinks the text for legend items
+      legend.title = element_text(size = 9), # Shrinks the legend title
+      
+     
+      axis.ticks = element_blank(), 
+      panel.spacing = unit(0, "lines"), 
+      plot.background = element_blank(), 
+      
+      legend.position = 'left') +labs(size='-log(q)')
+  
+
+}
+```
+
+## Assemble curated panels
+```{r, fig.asp=65/80, fig.height=0.1, fig.align="center"}
+
+
+unique_labels = length(unique_hpa_celltypes) + length(unique_sc_celltypes) + length(unique_immune_celltypes) +  2
+ncol.sum = 4 * 2
+
+gap_width = -0.4
+overhead = 0.4
+
+nmf.tissue_match.plot <-          plot_grid(
+           cms.plot, NULL,
+           scrna.match.plot , NULL,
+           hpa.match.plot , NULL,
+           immune.cor.plot , NULL
+           
+           
+           ,ncol = ncol.sum, align = 'hv', axis = "rlbt", 
+           rel_widths = c(
+             2/unique_labels + overhead , gap_width + 0.01,
+             length(unique_sc_celltypes)/unique_labels + overhead, gap_width + 0.01,
+             length(unique_hpa_celltypes)/unique_labels + overhead, gap_width + 0.01,
+             length(unique_immune_celltypes)/unique_labels + overhead, 0.1
+            
+             
+           )
+         )
+
+nmf.tissue_match.plot
+ggsave(paste0(basedir, "/results/fig/FIG3e.nmf.tissue_match.svg"),plot =
+         
+nmf.tissue_match.plot
+       
+    , device = "svg", height = 65, width = 80, units = 'mm' )
+
+
+  
+
+```

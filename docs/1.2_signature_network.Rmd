@@ -1,0 +1,913 @@
+# Make signature network and train top scoring pair classifier
+This is a part that we found was conceptually tricky for a lot of the folks we talked to. With the samples all classified, now we can check how often a given sample is assigned to each of the classes. Then, we can check how similar the class assignment profile of a given tumor is to every other tumor. This similarity in the assignment of tumors to classes is the root of the network: when lots of tumors are assigned to the same two classes, those two classes are highly connected in the network -- and then we scale that to all the classes. 
+
+Then we cluster the network. That means we ask whether some nodes are more connected to each other than you'd expect from considering the network as a whole. This clustering step is how we find that many classes are effectively very similar: while the geneset in the classifier might be quite different, effectively they are acting on a very similar underlying signal and the same tumors are assigned to the same classes.
+
+Finally, we want to use this clustering of classes to train a classifier (ie given a single sample, which cluster of classes would it be assigned to?). We chose a top scoring pair (TSP) algorithm here because it is very flexible: the assignment is made from the relative expression at pairs of genes, which means the absolute values are a lot less important, making the algorithm very portable among platforms. We train the TSP on only the samples where all the classifiers agree on the cluster class.
+
+## Filter out classifiers with low assignment rates
+We started with all the BTC RNA tumour classifiers we could find. This meant some didn't fit well with our data. As a first step, we removed classifiers where very few of our samples could be conclusively (FDR < 0.05) classified into any class.
+
+```{r}
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(Matrix)
+  library(MCL)
+  library(switchBox)
+  library(DescTools)
+  library(cluster)
+  library(ggplot2)
+  library(ggraph)
+  library(ggrepel)
+  library(ggforce)
+  library(PNWColors)
+  library(tidygraph)
+  library(igraph)
+  library(cowplot)
+})
+
+packageVersion('switchBox')
+packageVersion('MCL')
+
+set.seed(123)
+
+basedir = '~/Documents/scripts/github/btc-ccs/'
+secdir = '~/Documents/scripts/github/evolution/'
+
+source( file.path(basedir, "bin/BTC.functions.R"))
+
+paper_sources <- c(
+
+  "ahn_B"           = 'Ahn et al.',   
+  "ahn_A"           = 'Ahn et al.',  
+  
+  "andersen_class_2"            = 'Andersen et al.',   
+  "andersen_class_1"   = 'Andersen et al.',
+  
+  "song_s100p_pos"              = 'Song et al.',   
+  "song_spp1_pos"               = 'Song et al.',   
+  
+  "martinserrano_Desert-like" = 'Martin-Serrano et al.'        ,
+  "martinserrano_Tumor Classical"  = 'Martin-Serrano et al.'  ,
+  "martinserrano_Hepati Stem-like"    = 'Martin-Serrano et al.',
+  "martinserrano_Inflammatory Stroma"= 'Martin-Serrano et al.',
+  "martinserrano_Immune Classical"    = 'Martin-Serrano et al.',
+  
+  "vijay_bilineage"       = 'Vijay et al.',     
+  "vijay_Hepatocyte"       = 'Vijay et al.',     
+  "vijay_ductal"          = 'Vijay et al.',     
+  "vijay_EMT"             = 'Vijay et al.',     
+  
+  "orourke_LS"         = 'ORourke et al.',        
+  "orourke_RP"                   = 'ORourke et al.',
+  
+  "montal_mesenchymal"      = 'Montal et al.',   
+  "montal_metabolic"             = 'Montal et al.',   
+  "montal_proliferation"       = 'Montal et al.',    
+  "montal_immune"           = 'Montal et al.',        
+  
+  "nepal_subtype2"        = 'Nepal et al.',      
+  "nepal_subtype1"            = 'Nepal et al.',  
+  "nepal_subtype3"           = 'Nepal et al.',  
+  "sia_Proliferation"       = 'Sia et al.',    
+  "sia_Inflammation"            = 'Sia et al.',   
+  "fan_C1"                     = 'Fan et al.',   
+  "fan_C2"   = 'Fan et al.'
+)
+
+short_name_key <- c(
+  "martinserrano_Desert-like" = 'Desert-like'        ,
+  "martinserrano_Tumor Classical"  = 'Tumor Classical'  ,
+  "martinserrano_Hepati Stem-like"    = 'Hepatic Stem-like',
+  "martinserrano_Inflammatory Stroma"= 'Inflammatory Stroma',
+  "martinserrano_Immune Classical"   = 'Immune Classical',
+  "orourke_LS"         = 'Long Survivor',        
+  "orourke_RP"                   = 'Rapid Progressor',
+  "vijay_bilineage"       = 'Bilineage',     
+  "vijay_Hepatocyte"       = 'Hepatocyte',     
+  "vijay_ductal"          = 'Ductal',     
+  "vijay_EMT"             = 'EMT',     
+
+  
+  "montal_mesenchymal"      = 'Mesenchymal',   
+  "montal_metabolic"             = 'Metabolic',   
+  "montal_proliferation"       = 'Proliferation',    
+  "montal_immune"           = 'Immune',        
+  "song_s100p_pos"              = 'S100P+',   
+  "song_spp1_pos"               = 'SPP1+',   
+  "andersen_class_2"            = 'Andersen-2',   
+  "andersen_class_1"   = 'Andersen-1',
+  "ahn_B"           = 'Ahn-B',   
+  "ahn_A"           = 'Ahn-A',  
+  "nepal_subtype2"        = 'Nepal-1',      
+  "nepal_subtype1"            = 'Nepal-2',  
+  "nepal_subtype3"           = 'Nepal-3',  
+  "sia_Proliferation"       = 'Sia-Proliferation',    
+  "sia_Inflammation"            = 'Sia-Inflammation',   
+  "fan_C1"                     = 'Fan-Mesenchymal-C1',   
+  "fan_C2"   = 'Fan-Metabolic-C2'
+)
+
+
+labels_df.raw <- fread(file.path(basedir,"/results/classified.FF.txt"))
+labels_df.raw <- labels_df.raw  %>% dplyr::select( -starts_with("martinserrano") ) 
+classifieds <- labels_df.raw %>% dplyr::select(starts_with("Sample") | ends_with('.class'))
+
+classifieds.melt <- classifieds %>% reshape2::melt(id.vars=c('Sample')) 
+classifieds.melt$variable <- gsub(".class","", classifieds.melt$variable)
+classifieds.melt$class <- paste0(classifieds.melt$variable, "_", classifieds.melt$value)
+classifieds.melt$class[is.na(classifieds.melt$value)] <- NA
+
+classifieds.n <- classifieds.melt  %>% group_by(variable, value, class) %>% tally()
+
+sig.colors <- cbind.data.frame('class'=unique(classifieds.n$class),
+                               'color'=c(pnw_palette(name="Sailboat", n=length(unique(classifieds.n$class)) ))
+)
+
+sig.colors.vec <- sig.colors$color
+names(sig.colors.vec) <- sig.colors$class
+
+signature_dropout.plot <- 
+ggplot(classifieds.n , aes(x=variable, y=n, fill=class )) + 
+  geom_bar(stat='identity', color='white') + 
+  
+  geom_hline(yintercept = nrow(classifieds)/2, color='indianred',linetype='longdash') +
+  
+  geom_text(stat='identity',aes(label=value),size=2,
+            position = position_stack(vjust = 0.5)
+  ) + 
+  theme_bw(base_size=10) +
+  scale_fill_manual(values =  sig.colors.vec, na.value = 'grey95') +
+  theme(panel.grid = element_blank(), plot.background = element_blank(), panel.background = element_blank(), axis.title.x = element_blank()) + 
+  guides(fill='none')
+
+signature_dropout.plot
+
+ggsave(paste0(basedir, "/results/fig/FIGS2A.signature_dropout.svg"), plot = 
+  signature_dropout.plot
+, device = "svg", height = 70,width = 125, units = 'mm' )
+
+labels_df <- labels_df.raw %>% dplyr::select(starts_with("Sample") | ends_with('.prediction'))
+names(labels_df) <- gsub('.prediction','',names(labels_df) )
+
+ncol(labels_df) - 2
+length(unique(unlist(labels_df[,-1]))) - 2
+
+nrow(labels_df)
+
+labels_df <- labels_df  %>% dplyr::select( -nepal, -fan ) 
+
+```
+
+## Make matrix
+
+Here, we start making the similarity matrix for the network. We loop through classes and calculate the Jaccard similarity in assignments.
+
+```{r}
+
+subtype_sets <- list()
+for (col in names(labels_df)[-1]) {
+  for (subtype in unique(labels_df[[col]])) {
+    subtype_sets[[paste0(col, "_", subtype)]] <- 
+      labels_df$Sample[labels_df[[col]] == subtype]
+  }
+}
+
+subtypes <- names(subtype_sets)
+n <- length(subtypes)
+jaccard_matrix <- matrix(0, nrow = n, ncol = n, dimnames = list(subtypes, subtypes))
+
+for (i in 1:n) {
+  for (j in i:n) {
+    a <- subtype_sets[[i]]
+    b <- subtype_sets[[j]]
+    jaccard <- length(intersect(a, b)) / length(union(a, b))
+    jaccard_matrix[i, j] <- jaccard
+    jaccard_matrix[j, i] <- jaccard
+  }
+}
+
+adj <- jaccard_matrix
+diag(adj) <- 0  
+
+g <- graph_from_adjacency_matrix(adj, mode = "undirected", weighted = TRUE)
+
+tg <- as_tbl_graph(g) 
+
+tg <- tg %>%
+  mutate(paper = paper_sources[name])
+tg <- tg %>%
+  mutate(short_name = short_name_key[name])
+
+subtype_counts <- 
+  subtype_counts <- labels_df %>%
+  pivot_longer(cols = -Sample, names_to = "System", values_to = "Subtype") %>%
+  mutate(Node = paste0(System, "_", Subtype)) %>%
+  group_by(Node) %>%
+  summarise(sample_count = n(), .groups = "drop")
+
+
+tg <- tg %>%
+  left_join(subtype_counts, by = c("name" = "Node"))
+
+layout <- create_layout(tg, layout = "fr")
+  
+full_signature_network.plot <- 
+           ggraph(layout) +
+           geom_edge_link(aes(width = weight, alpha=weight), color = "black") +
+           geom_node_point(aes(x = x, y = y, color = name, size = sample_count), shape = 16) +
+           geom_node_label(aes(x = x, y = y, label = short_name), repel = TRUE, size = 2.5 , label.padding = 0.1) +
+           
+           scale_edge_width(range = c(0.01, 1)) +
+             scale_color_manual(values =  sig.colors.vec )+
+           
+           scale_size_continuous(range = c(2, 4))  +
+
+           theme_void(base_size = 10) +
+           theme(legend.position = "right"  )  +
+         guides(color='none',size='none')+
+           scale_x_continuous(expand = expansion(mult = 0.1)) +
+           scale_y_continuous(expand = expansion(mult = 0.1))
+         
+full_signature_network.plot
+
+ggsave(paste0(basedir, "/results/fig/FIGS2b.full_signature_network.svg"), plot = 
+          full_signature_network.plot 
+  , device = "svg", height = 70,width = 95, units = 'mm' )
+
+```
+
+## Filter for well connected nodes (classes)
+
+We first drop classes where the class is connected to less than 2% of the network. We then loop across inflation factors to optimize the network and iteratively dropping classes that do not belong to a cluster.
+
+```{r}
+
+degree_threshold <- nrow(labels_df) * 0.02
+print(degree_threshold)
+
+node_degrees <- rowSums(adj)
+print(sort(node_degrees))
+
+keep_nodes <- which(node_degrees >= degree_threshold)
+adj_filtered <- adj[keep_nodes, keep_nodes]
+ 
+cat('dropping: ', setdiff(rownames(adj), rownames(adj_filtered)))
+
+#### optimize
+
+inflation_values <- seq(1.5, 20, by = 0.5)
+
+# Store results
+results <- list()
+g <- graph_from_adjacency_matrix(adj_filtered, mode = "undirected", weighted = TRUE)
+subtypes <- rownames(adj_filtered)
+
+for (inflation in inflation_values) {
+  cat("\n\nRunning MCL with inflation =", inflation)
+  
+  # Run MCL
+  mcl_result <- mcl(adj_filtered, inflation = inflation, addLoops = TRUE)
+  
+  cluster_count <- length(unique(mcl_result$Cluster))
+  
+  # Extract cluster membership
+  membership <- mcl_result$Cluster
+  
+  # Silhouette score
+  # Convert adjacency to distance matrix
+  dist_matrix <- as.dist(1 - adj_filtered)  # assuming similarity matrix
+  # Compute silhouette
+  sil <- silhouette(membership, dist_matrix)
+  
+  dropped = 0
+  
+  if ( any(membership <= 0) ) {
+    
+    cat("\nSome signature have no class. Dropping... ")
+    kept_subtypes <- subtypes
+    max_iteration = 0
+    
+    while(any(membership <= 0) ){
+      
+      cat(length(kept_subtypes[membership == 0]), ' ')
+      dropped = dropped + length(kept_subtypes[membership == 0])
+      classed_nodes = kept_subtypes[membership != 0]
+      
+      # Filter adjacency matrix
+      adj_classed <- adj_filtered[classed_nodes, classed_nodes]
+      g_classed <- graph_from_adjacency_matrix(adj_classed, mode = "undirected", weighted = TRUE)
+      
+      # Run MCL
+      mcl_result_classed <- mcl(adj_classed, inflation = inflation, addLoops = TRUE)
+      
+      cluster_count <- length(unique(mcl_result_classed$Cluster))
+      
+      # Extract cluster membership
+      membership <- mcl_result_classed$Cluster
+      kept_subtypes <- rownames(adj_classed)
+      max_iteration = max_iteration + 1
+      
+      
+      if (max_iteration >= 20) {
+        warning("Maximum number of iterations reached. Exiting loop.")
+        break
+      }
+      
+      
+    }
+    
+    # Silhouette score
+    # Convert adjacency to distance matrix
+    dist_matrix_classed <- as.dist(1 - adj_classed)  # assuming similarity matrix
+    # Compute silhouette
+    sil <- silhouette(membership, dist_matrix_classed)
+    
+    mod_score <- modularity(g_classed, membership)
+    avg_sil <- mean(sil[, 3])
+    
+    
+  } else if (sum(membership) == length(membership)) {
+    cat("\nOnly one cluster.\n")
+    
+    mod_score <- modularity(g, membership)
+    avg_sil = NA
+    
+  } else {
+    
+    mod_score <- modularity(g, membership)
+    avg_sil <- mean(sil[, 3])
+  
+  }
+  
+  results <- rbind(results, 
+                   data.frame(inflation = inflation, 
+                              clusters = cluster_count,
+                              modularity = mod_score,
+                              silhouette = avg_sil,
+                              dropped = dropped
+                              ))
+}
+
+
+res.melt <- results %>% reshape2::melt(id.vars=c('inflation'))
+
+final.inflation = 14.5
+
+network_optimization.plot <- 
+ggplot(res.melt, aes(x=inflation, y=value)) + 
+  geom_vline(xintercept = final.inflation, color='grey', size=2)+
+  geom_line() + geom_point() + facet_grid(variable~., scales='free', switch = "y") +
+  theme_bw(base_size = 10)+
+  theme(panel.grid = element_blank(), plot.background = element_blank(), strip.background = element_blank(),
+        
+        panel.background = element_blank(),  axis.title.y = element_blank())  
+
+network_optimization.plot
+
+ggsave(paste0(basedir, "/results/fig/FIGS2C.network_optimization.svg"), plot = 
+         network_optimization.plot
+, device = "svg", height = 70,width = 90, units = 'mm' )
+
+
+mcl_result <- mcl(adj_filtered, addLoops = TRUE, inflation = final.inflation) 
+interim.membership <- mcl_result$Cluster
+
+if(length(subtypes[interim.membership == 0]) > 0){
+  cat('dropping: ',subtypes[interim.membership == 0], '\n')
+}
+
+length(subtypes[interim.membership != 0])
+final.classed_nodes = subtypes[interim.membership != 0]
+final.classed_nodes
+
+# Filter adjacency matrix
+final.adj_classed <- adj_filtered[final.classed_nodes, final.classed_nodes]
+
+```
+
+## Visualize final graph 
+
+We also run the hypergeometric test here. Don't forget, the layout of the graph is stochastic so may not look like figure (in fact, we generated 25 layouts and chose the best one aesthetically).
+
+```{r}
+
+final.g_classed <- graph_from_adjacency_matrix(final.adj_classed, mode = "undirected", weighted = TRUE)
+
+final.mcl_result_classed <- mcl(final.adj_classed, inflation = final.inflation, addLoops = TRUE)
+
+kept_subtypes <- rownames(final.adj_classed)
+
+final.membership <- final.mcl_result_classed$Cluster
+names(final.membership) <- kept_subtypes
+
+print(final.membership)
+cluster_membership.df <- tibble(final.membership)
+cluster_membership.df$signature <- names(final.membership)
+
+cluster_ids <- unique(final.membership)
+set_A <- which(final.membership == cluster_ids[1])
+set_B <- which(final.membership == cluster_ids[2])
+
+observed <- sum(final.adj_classed[set_A, set_B] > 0)
+
+num_nodes <- nrow(final.adj_classed) 
+N <- choose(num_nodes, 2)  
+K <- length(set_A) * (num_nodes - length(set_A))
+n <- length(set_B) * (num_nodes - length(set_B))
+
+phyper(observed - 1, K, N - K, n, lower.tail = FALSE)
+
+tg <- as_tbl_graph(final.g_classed) %>%
+  mutate(cluster = as.factor(final.membership[name]))
+
+tg <- tg %>%
+  mutate(paper = paper_sources[name])
+tg <- tg %>%
+  mutate(short_name = short_name_key[name])
+
+subtype_counts <- 
+  subtype_counts <- labels_df %>%
+  pivot_longer(cols = -Sample, names_to = "System", values_to = "Subtype") %>%
+  mutate(Node = paste0(System, "_", Subtype)) %>%
+  group_by(Node) %>%
+  summarise(sample_count = n(), .groups = "drop")
+
+tg <- tg %>%
+  left_join(subtype_counts, by = c("name" = "Node"))
+
+
+  
+
+  layout <- create_layout(tg, layout = "fr")
+  
+  signature_network.plot <- 
+  ggraph(layout) +
+    # Draw convex hulls around clusters
+    geom_mark_hull(aes(x = x, y = y, group = cluster),
+                   concavity = 3,  color = "cornflowerblue", linetype='longdash', size=0.5, ) +
+    # Draw edges
+    geom_edge_link(aes(width = weight, alpha=weight), color = "black", show.legend = FALSE) +
+    # Draw nodes
+    geom_node_point(aes(x = x, y = y, color = short_name, size = sample_count), shape = 16) +
+    # Add labels
+    geom_node_label(aes(x = x, y = y, label = short_name), repel = TRUE, size = 2.5 , label.padding = 0.1) +
+    
+    scale_edge_width(range = c(0.01, 1)) +
+   
+    
+    scale_color_manual(values = c(
+      'Immune' = pnw_palette(name="Bay", n=19 )[c(10)],
+      'Metabolic' = pnw_palette(name="Bay", n=19 )[c(1)],
+      
+      'Ahn-A'  =pnw_palette(name="Bay", n=19)[c(5)]      ,
+      'Ahn-B' =pnw_palette(name="Bay", n=19)[c(8)] ,
+      
+      'Long Survivor' = pnw_palette(name="Bay", n=19 )[c(2)],        
+      'Rapid Progressor' =pnw_palette(name="Bay", n=19 )[c(11)] ,
+      
+      'Ductal' = pnw_palette(name="Bay", n=19 )[c(13)], 
+      'Bilineage' = pnw_palette(name="Bay", n=19 )[c(4)],     
+
+      'S100P+' =pnw_palette(name="Bay", n=19 )[c(12)],   
+      'SPP1+' =pnw_palette(name="Bay", n=19 )[c(3)], 
+      
+      'Andersen-2' = pnw_palette(name="Bay", n=19 )[c(9)],   
+      'Andersen-1' = pnw_palette(name="Bay", n=19 )[c(6)]
+      
+    )) +
+    scale_size_continuous(range = c(2, 4))  +
+    guides(width='none',
+           color='none',
+           size='none'
+           ) +
+    theme_void(base_size = 10) +
+    theme(plot.margin = unit(c(2, 2, 2, 2), "mm"),
+          legend.position = "right"  )  +
+    scale_x_continuous(expand = expansion(mult = 0.1)) +
+    scale_y_continuous(expand = expansion(mult = 0.1))+ coord_cartesian(clip = "off")
+  
+signature_network.plot
+
+replot_network = F
+if(replot_network){
+  
+  ggsave(paste0(basedir, "/results/fig/FIG2A.signature_network.svg"), plot = 
+  signature_network.plot
+  , device = "svg", height = 40,width = 100, units = 'mm', dpi=72 )
+    
+}
+
+
+```
+
+## make consensus cohort
+
+This is the set of samples where all (remaining) classifiers assign the sample to the same class cluster. We remove classifiers where more than 20% of samples are unassigned in remaining classes.
+
+```{r}
+
+labels_df.joined <- labels_df[,-1]
+
+labels_df.joined[] <- lapply(names(labels_df.joined), function(col) {
+  paste(col, labels_df.joined[[col]], sep = "_")
+})
+
+labels_df.joined <- as.matrix(labels_df.joined)
+
+lookup_vec <- setNames(cluster_membership.df$final.membership, cluster_membership.df$signature)
+
+mat_num <- matrix(lookup_vec[labels_df.joined], 
+                  nrow = nrow(labels_df.joined), 
+                  ncol = ncol(labels_df.joined))
+
+
+dt <- as.data.table(mat_num)
+names(dt) <- names(labels_df[,-1])
+
+na_counts <- colSums(is.na(dt))
+
+par(mfrow = c(1, 1))
+barplot(na_counts)
+
+dt_clean <- dt %>%
+  dplyr::select(where(~ mean(is.na(.)) <= 0.20))
+
+all_1 <- dt_clean[, rowSums(.SD == 1) == length(dt_clean), .SDcols = names(dt_clean)]
+all_2 <- dt_clean[, rowSums(.SD == 2) == length(dt_clean), .SDcols = names(dt_clean)]
+
+dt_clean$tumour.id <- labels_df$Sample
+dt_subset <- dt_clean[all_1 | all_2]
+
+cms_labels <- unlist(c(dt_subset[,1]))
+names(cms_labels) <- dt_subset$tumour.id
+
+length(cms_labels)
+
+CMSO <- setdiff(dt_clean$tumour.id, names(cms_labels))
+length(CMSO)
+
+```
+
+## Train top scoring pair (TSP) algorithm
+Train the TSP algorithm on 80% of the data from the TPM data. 
+
+```{r}
+
+expr_matrix_raw <- fread(file.path(basedir,"/results/rna.tpm.ff.txt")) 
+expr_matrix <- as.matrix(expr_matrix_raw[,-1])
+rownames(expr_matrix) <- expr_matrix_raw$gene_name
+
+threshold <- 0.95
+row_proportions <- rowMeans(expr_matrix > 0)
+filtered_mat <- expr_matrix[row_proportions > threshold, ]
+
+nrow(expr_matrix)
+nrow(filtered_mat)
+
+gene_set <- fread(file.path(basedir,'/source_data/fgs.txt'))
+
+gene_list <- gene_set %>% 
+  filter( ( biotype=="protein_coding" & Length >= 500 & Chr %in% c(1:23) ) ) %>% #
+  dplyr::select(gene_name)
+
+these.genes <- intersect(gene_list$gene_name, rownames(filtered_mat))
+filtered_mat <- filtered_mat[these.genes,]
+
+labeled_samples <- intersect(colnames(filtered_mat), names(cms_labels))
+X.raw <- filtered_mat[, labeled_samples]
+
+gene_variances <- apply(X.raw, 1, var)
+
+top_genes <- names(sort(gene_variances, decreasing = TRUE))
+expr_filtered <- X.raw[top_genes, ]
+
+X <- t(expr_filtered)
+
+y <- cms_labels[labeled_samples]
+
+length(y)
+
+train_idx <- sample(seq_along(y), 4 * length(y) / 5)
+X_train <- X[train_idx, ]
+y_train <- y[train_idx]
+length(y_train)
+
+X_valid <- X[-train_idx, ]
+y_valid <- y[-train_idx]
+
+#### TSP model ####
+
+expr_data <- t(X_train)
+
+trainingGroupNum <- as.numeric(y_train) - 1
+
+table(trainingGroupNum)
+
+classifier <- SWAP.KTSP.Train(inputMat = expr_data, 
+                              phenoGroup = factor(trainingGroupNum), 
+                              krange = c(10:16))
+
+trainingPrediction <- SWAP.KTSP.Classify(t(X_valid), classifier)
+
+print(table(Predicted = trainingPrediction, Actual = y_valid))
+
+BinomCI(x = 18, n = 18, conf.level = 0.95, sides = c("two.sided"), method = c("wilson"))
+
+#https://www.genenames.org/download/statistics-and-files/
+HGNC <- read.delim(file.path(basedir,"/source_data/hgnc_complete_set.txt"), sep = "\t", stringsAsFactors = FALSE)
+
+tsp.genes <- data.frame(classifier$TSPs)
+names(tsp.genes) <- c('CMS-A','CMS-B')
+
+  
+classifier[['aliases']] <- HGNC %>% filter(symbol %in% c(unlist(tsp.genes))) %>% dplyr::select(symbol, alias_symbol, prev_symbol)
+
+retrain_tsp = F
+if(retrain_tsp){
+  
+  write.table( tsp.genes,  
+             file = file.path(basedir,"/results/tsp.genes.txt"), 
+             row.names = F,col.names = T, quote = FALSE, sep = "\t", append =F)
+
+  model.date <- format(Sys.time(), "%y%m%d")
+  
+  saveRDS(classifier, file.path(basedir,"/results/tps.classifier.rds"))
+  saveRDS(classifier, paste0(basedir,'/results/tps.classifier.',model.date,'.rds'))
+  
+  tsp.training.samples <- list('training_set'=y_train, 'test_set'=y_valid)
+  saveRDS(tsp.training.samples, paste0(basedir,'results/tsp.training.samples.rds'))
+  
+} 
+
+```
+
+## Assess CCS is non-consensus samples 
+Here, we evaluate how many samples are in neither class and estimate our confidence in the CCS call using the proportion of genes in agreement with a call (>12/16).
+
+```{r}
+
+tsp.training.samples <- readRDS(file.path(basedir,'/results/tsp.training.samples.rds'))
+
+expr_matrix_raw <- fread(file.path(basedir,"/results/rna.tpm.ff.txt")) 
+expr_matrix <- as.matrix(expr_matrix_raw[,-1])
+rownames(expr_matrix) <- expr_matrix_raw$gene_name
+
+classifier <- readRDS(file.path(basedir,"/results/tps.classifier.rds"))
+
+all.LBR.rna <- expr_matrix
+
+predicted.w.score <- predict_TSP_with_confidence(tsp_classifier=classifier, tpm_matrix=all.LBR.rna, confidence_cutoff = NA)
+predicted.w.score <- cbind.data.frame('sample'=rownames(predicted.w.score), predicted.w.score) 
+
+predicted.w.score$train_class <- predicted.w.score$rna_class
+predicted.w.score$train_class[predicted.w.score$sample %in% CMSO] <- 'non-consensus'
+
+binned_counts <- predicted.w.score %>%
+  dplyr::count(train_class, confidence.polarized) %>%
+  complete(train_class, confidence.polarized, fill = list(n = 0))
+
+frequencies <- binned_counts %>%
+  #group_by(rna_class) %>%
+  mutate(freq = n / sum(n)) %>%
+  ungroup()
+
+cmso.plot <- 
+ggplot(frequencies, aes(x=confidence.polarized, y=freq, fill=train_class)) + 
+  
+  geom_vline(xintercept = 0.25, color='grey80')+
+  geom_vline(xintercept = 0.75, color='grey80')+
+  
+  geom_bar(position = position_dodge(), stat="identity", alpha=0.4) + 
+
+  geom_line(aes(color=train_class), position = position_dodge(width=0.05)) +
+  
+  theme_bw(base_size=10) +
+  scale_fill_manual(  values=c(
+    "CMS-B"    = "#EDA71A" , 
+    "CMS-A" = "#04597C" ,
+    "non-consensus" = "grey"
+  )) + scale_color_manual(  values=c(
+    "CMS-B"    = "#EDA71A" , 
+    "CMS-A" = "#04597C" ,
+    "non-consensus" = "grey"
+  )) +  
+  theme(
+    legend.text = element_text(size = 6), 
+    legend.key.size = unit(0.5, "lines"),     
+    
+    panel.grid = element_blank(), 
+    legend.background = element_blank(),
+    legend.title = element_blank(),
+    panel.background = element_blank(), 
+    plot.background = element_blank()) +
+  scale_x_continuous(breaks=c(0,0.25,0.5,0.75,1)) +
+  labs(x='Fraction of gene pairs\nsupporting assignment',y='Cohort Frequency')
+cmso.plot  
+
+ggsave(paste0(basedir, "/results/fig/FIGS2D.cmso.svg"),plot =
+  cmso.plot       
+, device = "svg",width = 110, height = 70, units = 'mm' )
+
+predicted.w.score <- predict_TSP_with_confidence(tsp_classifier=classifier, tpm_matrix=all.LBR.rna, confidence_cutoff = 0.8)
+
+split_cols <-  data.frame(str_split_fixed(rownames(predicted.w.score), "_", 3))
+predicted.w.score <- cbind.data.frame('BTCID'=paste(split_cols$X1, split_cols$X2, sep=""),
+                                      'sample'=rownames(predicted.w.score), 
+                                      predicted.w.score) 
+
+predicted.w.score$train_class <- predicted.w.score$rna_class
+predicted.w.score$train_class[predicted.w.score$sample %in% CMSO] <- 'CMS-O'
+
+```
+
+## Save CCS calls for all samples
+
+```{r}
+
+rna_raw <- fread(file.path(secdir,"/results/rna.tpm.all.txt"))
+
+rna_raw.mat <- as.matrix(rna_raw[,-1])
+rownames(rna_raw.mat) <- rna_raw$gene_name
+
+predicted.w.score <- predict_TSP_with_confidence(tsp_classifier=classifier, tpm_matrix=rna_raw.mat)
+split_cols <-  data.frame(str_split_fixed(rownames(predicted.w.score), "_", 3))
+predicted.w.score <- cbind.data.frame('BTCID'=paste(split_cols$X1, split_cols$X2, sep=""),
+                                      'sample'=rownames(predicted.w.score), 
+                                      predicted.w.score) 
+
+sample.list <- fread(file.path(basedir,'/source_data/sample.list.txt'), header=F)
+predicted.w.score.filt <- predicted.w.score %>% filter(sample %in% sample.list$V2)
+
+BTC_clinical.tumours <- fread(file.path(basedir,'/source_data/BTC_clinical.tumours.tsv'), header=T)
+
+predicted.w.score.clinic <- left_join(predicted.w.score.filt, BTC_clinical.tumours, by=c('sample'='Sample'))
+predicted.w.score.clinic <- predicted.w.score.clinic %>% dplyr::select(`Study ID`, BTCID, sample, rna_class, confidence.polarized, `Sample Source(FFPE, FF)`) 
+
+clinic.sample.info <- fread(file.path(basedir,"/results/clinic.sample.info.txt"))
+
+sample.info <- left_join(predicted.w.score.clinic, clinic.sample.info, by=c('Study ID'='Study_ID'))
+
+write.table( predicted.w.score.filt,  
+             file = file.path(basedir,'/results/cmstsp.class.txt'), 
+             row.names = F,col.names = T, quote = FALSE, sep = "\t", append =F)
+
+write.table( predicted.w.score.clinic,  file = file.path(file.path(basedir,"/results/all.eCMS.txt")), row.names = FALSE, quote = FALSE, sep = "\t")
+
+```
+
+## Make heatmap
+This is just for visualization - take all the things we've develloped here and put them in one plot: stack the remaining classifiers, with the CCS class and then with the expression levels of the genes in the TSP algorithm.
+
+```{r}
+
+
+
+labels_df <- fread(file.path(basedir,"/results/classified.FF.txt"))
+names(labels_df)[1] <- "Sample"
+labels_df <- labels_df %>% dplyr::select(starts_with("Sample") | ends_with('.class'))
+names(labels_df) <- gsub('.class','', names(labels_df) )
+btc.sigs <- labels_df %>% dplyr::select(-fan,  -sia , -nepal)
+
+btc.sigs.melt <- btc.sigs %>% reshape2::melt(id.vars=c('Sample'))
+
+btc.sigs.melt$value[btc.sigs.melt$value == 'LS'] <- 'Long Survivor'
+btc.sigs.melt$value[btc.sigs.melt$value == 'RP'] <- 'Rapid Progressor'
+
+btc.sigs.melt$value[btc.sigs.melt$value == 's100p_pos'] <- 'S100P+'
+btc.sigs.melt$value[btc.sigs.melt$value == 'spp1_pos'] <- 'SPP1+'
+
+classifier <- readRDS(file.path(basedir,"/results/tps.classifier.rds"))
+
+predicted.w.score <- fread(file.path(basedir,"/results/all.eCMS.txt"))
+predicted.w.score <- predicted.w.score %>% filter(`Sample Source(FFPE, FF)` == 'FF')
+nrow(predicted.w.score)
+
+all.LBR.rna <- fread(file.path(basedir,"/results/rna.tpm.ff.txt")) 
+
+tsp.LBR.rna <- all.LBR.rna %>% filter(gene_name %in% c(classifier$TSPs)) %>% melt()
+tsp.LBR.rna$gene <- factor(tsp.LBR.rna$gene_name, levels=c(classifier$TSPs))
+
+tsp.LBR.rna$log <- log(tsp.LBR.rna$value )
+tsp.LBR.rna$log[!is.finite(tsp.LBR.rna$log)] <- NA
+tsp.LBR.rna$tpm.scale <- scale(tsp.LBR.rna$log)
+
+predicted.w.score$Samples <- factor(predicted.w.score$sample, levels=predicted.w.score$sample[order(predicted.w.score$confidence.polarized)])
+btc.sigs.melt$samples <- factor(btc.sigs.melt$Sample, levels=predicted.w.score$sample[order(predicted.w.score$confidence.polarized)])
+tsp.LBR.rna$Samples <- factor(tsp.LBR.rna$variable, levels=predicted.w.score$sample[order(predicted.w.score$confidence.polarized)])
+
+these.samples <- intersect(intersect(unique(btc.sigs.melt$sample),
+                           unique(tsp.LBR.rna$Samples)), unique(predicted.w.score$Samples))
+
+length(these.samples)
+
+this_theme <- theme(        
+  panel.background = element_blank(), #transparent panel bg
+  plot.background = element_blank(), #transparent plot bg
+  panel.grid.major.x = element_blank(), #remove major gridlines
+  panel.grid.minor = element_blank(), #remove minor gridlines
+  legend.background = element_rect(color = NA,fill=NA), #transparent legend bg
+  legend.box.background = element_rect(color = NA,fill=NA), #transparent legend panel
+  
+  axis.text.x =element_blank(),
+  panel.grid = element_blank(),
+  axis.title =element_blank(),
+  axis.ticks.x =element_blank(),
+  legend.title=element_blank(),
+  plot.title = element_blank(),
+  panel.border = element_blank(),
+  legend.spacing = unit(0, 'cm'),)
+
+split.size2 = -0.05
+base.font.size = 10
+
+my.plot <- plot_grid(
+
+  ggplot(btc.sigs.melt %>% filter(samples %in% these.samples & variable == 'song'), aes(x=samples, y='Song et al.', fill=value)) + 
+    geom_tile()+ theme_bw(base_size=base.font.size)+this_theme+
+    scale_fill_manual(values = pnw_palette(name="Bay", n=19 )[c(12,3)], na.value = 'grey90') +
+    theme(legend.direction = "horizontal" )+
+    guides(fill='none')
+  
+  , NULL,
+  
+  ggplot(btc.sigs.melt %>% filter(samples %in% these.samples & variable == 'orourke'), aes(x=samples, y='ORourke et al.', fill=value)) + 
+    geom_tile()+ theme_bw(base_size=base.font.size)+this_theme+
+    scale_fill_manual(values = pnw_palette(name="Bay", n=19 )[c(2,11)], na.value = 'grey90') +
+    theme(legend.direction = "horizontal")+
+    guides(fill='none')
+  
+  ,NULL,
+  
+  ggplot(btc.sigs.melt %>% filter(samples %in% these.samples & variable == 'andersen'), aes(x=samples, y='Andersen et al.', fill=value)) + 
+    geom_tile()+ theme_bw(base_size=base.font.size)+this_theme+
+    scale_fill_manual(values = pnw_palette(name="Bay", n=19 )[c(6,9)], na.value = 'grey90') +
+    theme(legend.direction = "horizontal" )+
+    guides(fill='none')
+  
+  , NULL,
+  
+  ggplot(btc.sigs.melt %>% filter(samples %in% these.samples & variable == 'ahn'), aes(x=samples, y='Ahn et al.', fill=value)) + 
+    geom_tile()+ theme_bw(base_size=base.font.size) + this_theme+
+    scale_fill_manual(values = pnw_palette(name="Bay", n=19)[c(5,8)], na.value = 'grey90') +
+    guides(legend.direction = "horizontal")+
+    guides(fill='none')
+  
+  ,NULL,
+  ggplot(btc.sigs.melt %>% filter(samples %in% these.samples & variable == 'vijay'), aes(x=samples, y='Vijay et al.', fill=value)) + 
+    geom_tile()+ theme_bw(base_size=base.font.size)+this_theme+
+    scale_fill_manual(values = pnw_palette(name="Bay", n=19 )[c(4,13,19,15)], na.value = 'grey90') +
+    theme(legend.direction = "horizontal" )+
+    guides(fill='none')
+  
+  ,NULL,
+  
+  ggplot(tsp.LBR.rna %>% filter(Samples %in% these.samples), aes(x=Samples, y=gene, fill=tpm.scale)) + geom_tile() + 
+    theme_bw(base_size=base.font.size)+this_theme+
+    scale_fill_gradient2(
+      low = "darkblue",     # for negative values
+      mid = "white",   # for zero
+      high = "darkred",   # for positive values
+      midpoint = 0 , 
+      na.value =  "darkblue"   # sets zero as the center
+    ) + theme(axis.text.x = element_blank(),
+              
+              axis.text.y = element_text(size = 5,face = "italic"),
+              axis.ticks.x = element_blank())+
+    guides(fill='none')
+  
+  ,NULL, 
+  
+  ggplot(predicted.w.score %>% filter(sample %in% these.samples ), aes(x=Samples, y='CMS-TSP', fill=as.factor(rna_class))) + 
+    geom_tile()+ 
+    #  geom_point(aes(size=confidence), shape=1)+
+    theme_bw(base_size=base.font.size)+this_theme+
+    scale_fill_manual(values = pnw_palette(name="Bay", n=30)[c(3,20)], na.value = 'grey90') +
+    guides(legend.direction = "horizontal") +
+    guides(fill='none')
+  
+  
+  ,
+  ncol = 1,align = 'hv', axis = "rlbt", 
+  rel_heights = c( 
+                   rep( c(0.1, split.size2), 5),
+                   0.1 * 8 ,split.size2,
+                   0.1
+  ))
+
+
+ggsave(paste0(basedir, "/results/fig/FIGS2E.expression_signatures.cms-tsp.svg"), 
+       plot = my.plot, device = "svg",height = 75 ,width = 210,  units = 'mm' )
+
+```
+
+
+
+```{r, fig.asp=75/210, fig.align="center"}
+
+my.plot
+```

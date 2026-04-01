@@ -1,0 +1,711 @@
+# Analyze scRNA from Song G et al 2022
+scRNA re-analysis of [Song G. et al. 2022](https://doi.org/10.1038/s41467-022-29164-0)
+
+## Data import
+These data can be accessed by connecting with the authors of that manuscript. We thank Dr. Guohe Song for giving us access.
+
+```{r}
+suppressPackageStartupMessages({
+
+library(dplyr)
+library(data.table)
+library(tibble)
+library(openxlsx)
+library(tidyr)
+library(stringr)
+library(Seurat) 
+library(SeuratObject)
+library(AUCell)
+library(ggplot2)
+library(ggrepel)
+library(PNWColors)
+library(cowplot)
+library(gghalves)
+  
+})
+
+packageVersion('Seurat')
+packageVersion('AUCell')
+
+'%ni%' <- function(x,y)!('%in%'(x,y))
+
+basedir = '~/Documents/scripts/github/btc-ccs/'
+secdir = '~/Documents/scripts/github/evolution/'
+
+source(paste0(basedir,"/bin/BTC.functions.R"))
+source(paste0(basedir,"/bin/scrna_fxn.R"))
+
+this.cohort = 'song_2022'
+main_dir <- file.path(secdir, '/source_data/scrna/',this.cohort)
+setwd(main_dir)
+
+save.ind.nonepi = F
+if(save.ind.nonepi){
+  noepi <- readRDS(file.path(secdir,'source_data/scrna/song_2022/nonepi.rds'))
+  no.epi.tumours <- unique(noepi@meta.data[,'orig.ident'])[grepl("T$", unique(noepi@meta.data[,'orig.ident']))]
+  
+  for(this.sample in no.epi.tumours){
+  
+    noepi.sub <- subset(noepi, subset = orig.ident == this.sample)
+  
+    noepi.sub <- SCTransform(noepi.sub, verbose = FALSE, method = "glmGamPoi")
+    noepi.sub$cellmeta <- 'noepi'
+    
+    if (!dir.exists(paste0("./infercnv/",this.sample))) {
+      dir.create(paste0("./infercnv/",this.sample), recursive = T)
+    }
+    
+    saveRDS(noepi.sub, paste0("./infercnv/",this.sample,'/nonepi.',this.sample,'.rds'))
+  
+  }
+}
+
+song.epi <- readRDS(file.path(secdir,'/source_data/scrna/song_2022/epi.rds'))
+
+song.epi <- SCTransform(song.epi, verbose = FALSE)
+song.epi <- subset(song.epi, subset = orig.ident %in% c('I02T', 'I03T', 'I04T', 'I06T', 'I09T', 'I10T', 
+                                                                 'I12T', 'I13T', 'I14T', 'I15T',  'I16T', 'I17T', 'I18T')) 
+
+
+```
+
+## Explore dataset at a high level
+
+```{r}
+
+song.epi <- RunPCA(song.epi)
+
+ElbowPlot(song.epi) # determining the number of dimensions to use to find neighbours 
+
+song.epi <- FindNeighbors(song.epi, dims = 1:15)
+song.epi <- RunUMAP(song.epi, dims = 1:15)
+
+DimPlot(song.epi, reduction = "umap", group.by = "orig.ident")
+
+```
+
+## Project NMF signatures onto cells with AUCcell
+We are mostly interested in the scRNA data because NMF decomposition does not necessarily resolve single cells, so we combine the two approaches. There's quite a bit of manual parametrization here again. The first is that we are transiting from gene weights from the NMF to gene lists for AUCcell. So we take the distribution of weights from the NMF and fit a bimodal distribution with mcclust using our make_gene_sets() function, most genes have small weights so are discarded in this step. However, the genesets were still highly correlated with just the removal of low weight genes (see corplot) so we go one step further and subset to the nth-tile of the distribution (in this case 90th percentile). 
+
+```{r}
+
+y_order.convert <- fread( file.path(basedir,'/results/NMF.conversion.txt' ))
+y_order.convert$og <- gsub('sig','V', y_order.convert$og)
+
+w.matrix <- read.csv(file.path(basedir,'/results/W_matrix.txt'), row.names= 1)
+genes <- row.names(w.matrix)
+w.matrix <- w.matrix %>% dplyr::select(all_of(y_order.convert$og))
+names(w.matrix) <- y_order.convert$new
+w.matrix <- as.matrix(w.matrix)
+row.names(w.matrix) <- genes
+
+gene_set <- fread(file.path(basedir,'/source_data/fgs.txt'))
+tpm_data <- convert_w_to_tpm_like(w.matrix, gene_set)
+gene_sets <- make_gene_sets(tpm_data, ntile=0.9)
+
+setClass("ExpData", contains = "matrix")
+expr_matrix <- GetAssayData(song.epi, assay = 'SCT', slot = 'data')
+
+expr_matrix.nmf <- expr_matrix[rownames(expr_matrix) %in% unique(unlist(gene_sets)), ]
+
+cells_rankings <- AUCell_buildRankings(expr_matrix.nmf) 
+
+nmf_AUC <- AUCell_calcAUC(gene_sets, 
+                          cells_rankings, 
+)
+
+```
+
+## AUCcell thresholding
+We found AUCcell results to be very impacted by thresholding so we left the paramters at default. Below is the fit of the NMF signatures across the scRNA cell population.
+
+```{r, fig.height=8}
+
+## find thresholds
+par(mfrow=c(4,2)) 
+cells_assignment <- AUCell_exploreThresholds(nmf_AUC, plotHist=TRUE, nCores=1, assign=TRUE)
+par(mfrow=c(1,1))
+
+auc_matrix <- as.data.frame(t(getAUC(nmf_AUC)))
+auc_matrix <- auc_matrix[Cells(song.epi), ]
+
+auc_matrix_zeroed <- auc_matrix
+
+for(this.sig.index in c(1:length(unique(names(cells_assignment)))) ){
+  this.sig <- paste0('sig.',this.sig.index)
+  this.ass <- cells_assignment[[this.sig]]
+  
+  
+  auc_matrix_zeroed[this.sig.index][auc_matrix_zeroed[this.sig.index] < this.ass$aucThr$selected] <- 0
+  
+}
+
+```
+
+## Visualize NMF signatures on umap
+With our signatures assigned, we project them in UMAP space.
+
+```{r}
+
+song.epi <- AddMetaData(song.epi, metadata = auc_matrix_zeroed)
+
+NMF_cols <- names(gene_sets)
+song.epi$Top_NMF <- NMF_cols[max.col(song.epi@meta.data[, NMF_cols], ties.method = "first")]
+scores <- song.epi@meta.data[, "Top_NMF", drop = FALSE]
+
+emb <- Embeddings(song.epi, "umap") %>%   as.data.frame() 
+
+df <- bind_cols(emb, scores)
+df <- cbind.data.frame(df, song.epi@meta.data[, NMF_cols])
+df$donor <- song.epi@meta.data[, 'orig.ident'] 
+
+centroids <- df %>%
+  group_by(donor) %>%
+  summarise(
+    x_centroid = median(umap_1),
+    y_centroid = median(umap_2)
+  )
+
+color.set <- c(
+  'sig.1' = 'grey30',
+  'sig.7' = 'black',
+  
+  
+  'sig.2' = 'lightblue',
+  'sig.6' = 'cornflowerblue',
+  
+  'sig.5' = "forestgreen" ,
+  'sig.8' = '#0A6F99' ,               #"#04597C" ,
+  
+  'sig.3' = 'yellow',
+  'sig.4' = '#D98E04'            #"#EDA71A"
+  
+  
+)
+
+ggplot(df, aes(x = umap_1, y = umap_2)) +
+  
+  geom_point(size=0.5, aes(color = Top_NMF)) +
+  geom_label_repel(data = centroids, aes(x = x_centroid, y = y_centroid, label = donor), 
+                   size=2,   box.padding = 0.5, force = 0.5, max.time = 4,  min.segment.length = 0, max.overlaps =15) +
+  theme_void() +  # removes all axes and background
+  scale_color_manual(values =  
+                       color.set, na.value = 'white'
+                     
+                     
+  ) + 
+  #  scale_fill_manual(values =  pnw_palette(name="Bay", n=12 ) ) + 
+  theme(
+    panel.border = element_blank(),
+    plot.margin = margin(t = 0, r = 0, b = 0, l = 0),
+    plot.background = element_blank()
+  ) 
+
+```
+
+## infercnv
+Now, let's take our cells and infer the copy number profile from gene expression. Aneuploid cells are more likely to be malignant.
+
+```{r}
+
+run.infercnv=F
+
+if(run.infercnv){
+  
+  library(infercnv)
+  packageVersion('infercnv')
+  library(Matrix)
+  library(hdf5r)
+  '%ni%' <- function(x,y)!('%in%'(x,y))
+  options(scipen = 100)
+  
+  all_genes <- fread(file.path(basedir,'/source_data/fgs.txt'))
+  
+
+  song.epi$cellmeta <- 'epi'
+  
+  these.samples <- unique(song.epi$orig.ident)
+  these.samples <- c('I19T')
+  
+  for(this.sample in these.samples){
+    
+    seurat_list <- list()
+    
+    seurat_list[['epi']] <- subset(song.epi, subset = orig.ident == this.sample) 
+    seurat_list[['noepi']] <- readRDS(paste0(basedir,'/source_data/scrna/song_2022/infercnv/',this.sample,'/nonepi.',this.sample,'.rds'))
+    
+    features <- SelectIntegrationFeatures(seurat_list, nfeatures = 2000) # adjust number of features as needed
+    
+    seurat_list <- purrr::map(seurat_list, ~ RunPCA(.x, verbose = FALSE))
+    
+    seurat_list <- PrepSCTIntegration(seurat_list, anchor.features = features)
+    
+    anchors <- FindIntegrationAnchors(
+      object.list = seurat_list,
+      normalization.method = "SCT",
+      anchor.features = features,
+      reduction = "rpca",
+      k.anchor = 10
+      
+    )
+    
+    
+    combined <- IntegrateData(anchorset = anchors, normalization.method = "SCT") 
+    
+    DefaultAssay(combined) <- "integrated"
+  
+    
+
+    ref_group_names <- c("noepi")
+    
+    
+    annotations <- data.frame(
+      Cell = colnames(combined),
+      Group = combined$cellmeta
+    )
+    
+    write.table(annotations, paste0("./infercnv/",this.sample,"/cellAnnotations.txt"), 
+                sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+    
+    gene_names <-  data.frame('gene_name'=rownames(combined@assays$RNA))
+    
+    gene_names <- left_join(gene_names, all_genes) %>% dplyr::select(gene_name, Chr,  Start,   End)
+    duplicate.genes <- gene_names %>% group_by(gene_name) %>% tally() %>% arrange(desc(n)) %>% filter(n > 1)
+    
+    gene_names <- gene_names %>% filter(gene_name %ni% duplicate.genes$gene_name & !is.na(Chr) & Chr < 23) %>% arrange(Chr, Start,   End)
+    
+    write.table(gene_names, paste0("./infercnv/",this.sample,"/geneAnnotations.txt"), sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+    
+    combined <- subset(combined, features = gene_names$gene_name)
+    
+    count_mat <- combined@assays$RNA$counts
+    
+    infercnv.obj <- CreateInfercnvObject(raw_counts_matrix = count_mat,
+                                         annotations_file = paste0("./infercnv/",this.sample,"/cellAnnotations.txt"),
+                                         delim = "\t",
+                                         ref_group_names = ref_group_names ,
+                                         gene_order_file = paste0("./infercnv/",this.sample,"/geneAnnotations.txt")
+    )
+    
+    infercnv.res <- infercnv::run(infercnv.obj,
+                                  # noise_filter = 0.2,  
+                                  # cutoff=0.5,
+                                  out_dir=paste0("./infercnv/",this.sample,"/output/"),
+                                  cluster_by_groups=TRUE,
+                                  denoise=TRUE,  
+                                  write_expr_matrix = T,
+                                  no_plot=T,
+                                  # num_threads=1,
+                                  HMM=T
+    )
+    
+    cnv_matrix <- data.frame(infercnv.res@expr.data)
+    
+    write.table( cnv_matrix,  
+                 file = paste0("./infercnv/",this.sample,"/",this.sample,'.cnv_matrix.tsv'), 
+                 row.names = T,col.names = T, quote = FALSE, sep = "\t", append =F)
+    
+  }
+}
+
+```
+
+## Predict gCCS from inferCNV profile
+We use our gCCS model to predict the CCS of individual cells form the CNV profiles inferred from inferCNV
+
+```{r}
+
+cytoBand <- fread(file.path(basedir,'/source_data/cytoBand.txt'), na.strings = '') %>% 
+  filter(!is.na(Chromosome))
+
+
+cytoBand<- separate(cytoBand, col = Chromosome, into = c('band','period'), sep = '\\.', remove=F, extra = 'drop', fill='right')
+
+cytoBand <- cytoBand %>%
+  mutate(
+    parts = str_match(band, "^(.*?[pq])(.*)$"),
+    arm = parts[,2],
+    armband = parts[,3]
+  ) %>%
+  dplyr::select(-parts) %>% filter(!is.na(arm) & arm %ni% c('Xq','Xp','Yp','Yq'))
+
+full_cnv_model <- readRDS(file.path(basedir,'/results/cnv.model.rds'))
+
+first.sample = T
+for(this.sample in unique(song.epi$orig.ident) ){
+  
+  infercnv.path <- paste0(secdir,"/source_data/scrna/song_2022/infercnv/",this.sample,"/",this.sample,'.cnv_matrix.tsv')
+  
+  if(file.exists(infercnv.path)){
+    
+    cat('analyzing ', this.sample,'\n')
+    
+    suppressWarnings(
+    
+      infer.cnv.data <- fread(infercnv.path )
+    
+    )
+    
+    #get gCMS per cell
+    
+    segment.gene.cyto <- inner_join(cytoBand, infer.cnv.data,  by=c('Hugo_Symbol'='V1')) %>%
+      dplyr::select(-c("Hugo_Symbol" , "Chromosome"  , "band" , "period" ,   "armband" ))
+    
+    ggplot(segment.gene.cyto, aes(x=band, y=))
+    
+    
+    arm.med <- segment.gene.cyto %>%
+      group_by(arm ) %>% 
+      summarise(across(where(is.numeric), \(x) median(x, na.rm = TRUE))) 
+    
+    arm.med.t <- data.frame(t(arm.med[,-1]))
+    arm.med.t <- log(arm.med.t, 2)
+    names(arm.med.t) <- paste0('arm.',arm.med$arm)
+    arm.med.t$mean.vaf <- 0.5
+    
+    arm.med.t$prob <- predict(full_cnv_model, arm.med.t, type = "response")
+    
+    #get cnv-score per cell
+    arm.med.t$cnv_scores <- sqrt(colMeans(infer.cnv.data[,-1]^2, na.rm = TRUE))
+    
+    arm.med.t$barcode <-  rownames(arm.med.t)
+    
+    if(first.sample){cnv.loads <- arm.med.t; first.sample=F} else {cnv.loads <- rbind.data.frame(cnv.loads,  arm.med.t) }
+    
+  } else {
+    
+    cat('!!no infercnv profile for ',this.sample,'\n')
+    
+  }
+}
+
+df$barcode <- rownames(df)
+
+df.cnv <- left_join(df, cnv.loads, by=c('barcode'='barcode')) %>% filter(!is.na(mean.vaf))
+
+```
+
+## Visualize the effect of using the gCCS model
+The classic "cnv-score" (global sum of copy variant segments) is not very sensitive. When we switch to the probabilities from the gCCS model, we see stronger separation of cells by their NMF signature. The probability threshold set using the bulk samples gave a ton of false positives, so we tried a more strict approach, subsetting to only the top 20% of cells for each CCS. 
+
+```{r}
+
+
+
+ggplot(df.cnv , aes(x=cnv_scores, fill=Top_NMF)) +
+  geom_vline(xintercept = 1, color="black",  linetype='longdash')+
+  
+  geom_histogram(position = position_dodge())+
+  facet_grid(donor~., scales='free') +
+  theme_bw()+
+  theme(panel.grid=element_blank(),
+        strip.background = element_blank()) +
+  
+  scale_fill_manual(values =  
+                      color.set, na.value = 'grey'
+  ) 
+
+
+THRESHOLD = 0.34
+
+df.cnv$gCMS <- NA
+df.cnv$gCMS[df.cnv$prob > 0.8 ] <- 'CMS-A'
+df.cnv$gCMS[df.cnv$prob < 0.2 ] <- 'CMS-B'
+
+ggplot(df.cnv %>% filter(!is.na(donor)), aes(x=prob, fill=Top_NMF)) +
+  facet_grid(donor~., scales='free') +
+  
+  geom_vline(xintercept = THRESHOLD, color="black")+
+  
+
+  geom_vline(xintercept = 0.8, color="#04597C",  linetype='dashed')+
+  geom_vline(xintercept = 0.2, color="#EDA71A",  linetype='dashed')+
+  
+  geom_histogram(position = position_dodge())+
+  
+  theme_bw()+
+  theme(panel.grid=element_blank(),
+        strip.background = element_blank()) +
+  
+  scale_fill_manual(values =  
+                      color.set, na.value = 'grey'
+  ) 
+
+
+df.cnv.filt <- df.cnv
+
+```
+
+## eCCS
+The TSP algorithm did not function at single cell resolution from high drop-out rates. So we calculate eCCS at the tumor-level from pseudo bulk. We bootstrap our pseudobulk estimate 100 to get a sense in our confidence of our assignment.
+
+```{r}
+
+tumour.subset_obj <- subset(song.epi, cells = df.cnv.filt$barcode) 
+
+whole.estimate <- get_cms_from_pseudobulk(tumour.subset_obj, grouping_var = "orig.ident")
+whole.estimate$sample_id <- rownames(whole.estimate)
+
+meta <- tumour.subset_obj@meta.data
+meta$cell <- rownames(meta)
+
+for(this.boot in c(1:100)){
+  
+  seed=format(Sys.time(), "%OS3")
+  set.seed(seed)
+  
+  sampled_cells <- meta %>%
+    group_by(orig.ident) %>%
+    slice_sample(n = 20, replace = F) %>%
+    pull(cell)
+  
+  
+  boot.subset <- subset(tumour.subset_obj, cells = sampled_cells)
+  
+  suppressMessages(
+    boot.estimate <- get_cms_from_pseudobulk(boot.subset, grouping_var = "orig.ident")
+  )
+  
+  boot.estimate$sample_id <- rownames(boot.estimate)
+  boot.estimate$boot <- this.boot
+  
+  if(this.boot == 1){all.boot.estimate <- boot.estimate}else{all.boot.estimate <- rbind.data.frame(all.boot.estimate, boot.estimate)}
+  
+}
+
+tsp_summary_stats <- all.boot.estimate %>%
+  group_by(sample_id) %>%
+  summarise(
+    median = median(confidence.polarized ),
+    mean = mean(confidence.polarized ),
+    se = sd(confidence.polarized ) / sqrt(n()),
+    ci_low = mean - qt(0.975, df = n() - 1) * se,
+    ci_high = mean + qt(0.975, df = n() - 1) * se
+  )
+
+tsp.confidence <- left_join(whole.estimate, tsp_summary_stats, by=c('sample_id'='sample_id'))
+
+tsp.confidence$Sample <- factor(tsp.confidence$sample_id, levels = tsp.confidence$sample_id[order(tsp.confidence$confidence.polarized )])
+
+df$condition <- 'iCCA'
+cohort <- df %>% dplyr::select(donor, condition) %>% unique()
+
+
+tsp.confidence <- left_join(tsp.confidence, cohort, by=c('Sample'='donor'))
+
+donor.confidence <- tsp.confidence %>% group_by(Sample) %>% summarise(mean.conf = mean(confidence.polarized, na.rm=T))
+tsp.confidence$Donor <- factor(tsp.confidence$Sample, levels = donor.confidence$Sample[order(donor.confidence$mean.conf)])
+
+
+
+ggplot(tsp.confidence , aes(x=Donor,  color=rna_class)) + 
+  
+  geom_errorbar(aes(ymin = ci_low*100, ymax = ci_high*100), width = 0.2)  +
+  
+  #  geom_line(aes(group=Donor, y=confidence.polarized*100))+
+  geom_point(aes(y=confidence.polarized*100), size=1.5)+
+  geom_point(aes(y=mean*100), shape=1)+
+  
+  facet_grid(. ~  Donor+condition , space='free_x',scales='free_x') +
+  
+  theme_bw(base_size=10) +scale_color_manual(values =  
+                                               c(
+                                                 "CMS-A"="#04597C", "CMS-B"="#EDA71A"
+                                                 
+                                                 
+                                               ), na.value = 'grey'
+  ) +labs(y='% of TSP for CMS-A')+ theme(panel.grid = element_blank(), 
+                                         axis.ticks.x = element_blank(),
+                                         axis.title.x = element_blank(),
+                                         axis.text.x = element_blank(),
+                                         
+                                         #strip.text.x = element_text(size = 6),
+                                         
+                                         plot.background=element_blank(),
+                                         panel.background = element_blank(),
+                                         panel.spacing = unit(0, "lines"),
+                                         strip.background = element_blank()) + guides(color='none')+ ylim(0,100)
+
+
+df.cms <- left_join(df.cnv.filt, tsp.confidence, by=c('donor'='sample_id'))
+
+df.cms.n <- df.cms %>% group_by(Donor, condition, rna_class, confidence.polarized, Top_NMF) %>% tally() 
+df.cms.n$esig <- factor(df.cms.n$Top_NMF, levels = paste0('sig.',c(1:10)))
+
+
+ggplot(df.cms.n , aes(x=Donor, y=n, fill=esig)) + 
+  geom_bar(stat='identity')+
+  facet_grid(.~Donor+condition , space='free_x',scales='free_x' ) +
+  theme_bw(base_size=10)+ 
+  theme(panel.grid = element_blank(), 
+        legend.position = 'bottom',
+        legend.background = element_blank(),
+        legend.text = element_text(size = 6), 
+        legend.key.size = unit(0.5, "lines"),     
+        plot.background=element_blank(),
+        panel.background = element_blank(),
+        legend.title = element_blank(),
+        
+        axis.title.x =  element_blank(),
+        
+        
+        panel.spacing = unit(0, "lines"),
+        strip.text = element_blank(),
+        strip.background = element_blank())+ labs(y='n of aneuploid cells')+
+  scale_fill_manual(values =  
+                      color.set, na.value = 'grey'
+  )
+
+```
+
+## cell gCCS to tumour eCCS
+Combine the cell-level genetic CCS calls to the pseudo-bulk eCCS calls and to the single cell NMF-signature assignments to show all three lines of evidence line up. Two samples had inclusive pseudo-bulk assignment and were removed in this step.
+
+```{r}
+
+tumour.cnv.arms <- df.cnv.filt %>%  dplyr::select(c("donor","barcode","gCMS","prob") |  starts_with("arm.") )
+
+tumour.cnv.arms <- tumour.cnv.arms %>% 
+  reshape2::melt(id.vars=c("donor",'barcode','prob','gCMS'))
+
+tumour.cnv.arms$band <- gsub("arm.","", tumour.cnv.arms$variable)
+
+tumour.cnv.arms <- tumour.cnv.arms %>%
+  dplyr::mutate(
+    arm = substr(band, nchar(band), nchar(band)),
+    chr = substr(band, 1, nchar(band) - 1)
+  ) %>%
+  dplyr::select(donor,barcode, prob, gCMS, chr, arm,band, value)
+
+model.coeff <- data.frame('band'=gsub('arm.','',names(full_cnv_model$coefficients))) %>%  mutate(
+  arm = substr(band, nchar(band), nchar(band)),
+  chr = substr(band, 1, nchar(band) - 1)
+) %>%   select(chr, arm, band)
+
+tumour.cnv.model.arms <- tumour.cnv.arms %>% filter(band %in% model.coeff$band & !is.na(gCMS))
+tumour.cnv.model.arms$Band <- factor(tumour.cnv.model.arms$band, levels = paste0(rep(1:21, each = 2), c("p", "q")) )
+
+tumour.cnv.model.arms %>%
+  group_by(donor) %>%
+  summarise(
+    most_common = names(sort(table(gCMS), decreasing = TRUE))[1],
+    percentage = max(table(gCMS)) / n() * 100
+  ) %>% summarise(mean_percentage=mean(percentage), min_perc=min(percentage), max_perc=max(percentage))
+
+
+tumour.cnv.model.arms$eCMS <- NA
+tumour.cnv.model.arms$eCMS[tumour.cnv.model.arms$donor %in% tsp.confidence$Donor[tsp.confidence$rna_class == 'CMS-A']] <- 'CMS-A'
+tumour.cnv.model.arms$eCMS[tumour.cnv.model.arms$donor %in% tsp.confidence$Donor[tsp.confidence$rna_class == 'CMS-B']] <- 'CMS-B'
+
+
+tumour.cnv.model.arms.match <- tumour.cnv.model.arms %>% filter(!is.na(eCMS) & !is.na(gCMS)) #filter(eCMS == gCMS)
+tumour.cnv.model.arms.match$Donor <- factor(tumour.cnv.model.arms.match$donor, levels = donor.confidence$Sample[order(donor.confidence$mean.conf)])
+
+
+
+
+df.cms.n.filt <- df.cms %>% filter(barcode %in% tumour.cnv.model.arms.match$barcode) %>% 
+  group_by(Donor, condition, rna_class, confidence.polarized, Top_NMF, gCMS) %>% tally() 
+df.cms.n.filt$n[df.cms.n.filt$gCMS == 'CMS-A'] <- -df.cms.n.filt$n[df.cms.n.filt$gCMS == 'CMS-A']
+
+df.cms.n.filt$esig <- factor(df.cms.n.filt$Top_NMF, levels = paste0('sig.',c(1:10)))
+
+
+df.cms.n.filt$gCMS.f <- factor(paste0('g',df.cms.n.filt$gCMS), levels = rev(c('gCMS-A','gCMS-B')))
+
+
+
+
+nmf.tally.gCMS.plot <- 
+         plot_grid(
+          
+           ggplot(tsp.confidence %>% filter(Donor %in% df.cms.n.filt$Donor), aes(x=Donor,  color=rna_class)) + 
+             
+             geom_hline(yintercept = 80, color='grey', linetype='dotted')+
+             geom_hline(yintercept = 20, color='grey', linetype='dotted')+
+             
+             geom_errorbar(aes(ymin = ci_low*100, ymax = ci_high*100), width = 0.2)  +
+             
+             geom_point(aes(y=confidence.polarized*100), size=1.5)+
+             geom_point(aes(y=mean*100), shape=1)+
+             
+             facet_grid(. ~  Donor , space='free_x',scales='free_x') +
+             
+             theme_bw(base_size=10) +scale_color_manual(values =  
+                                                          c(
+                                                            "CMS-A"="#04597C", "CMS-B"="#EDA71A"
+                                                            
+                                                            
+                                                          ), na.value = 'grey'
+             ) +labs(y='% of TSP')+ theme(panel.grid = element_blank(), 
+                                                     axis.ticks.x = element_blank(),
+                                                     axis.title.x = element_blank(),
+                                                     axis.text.x = element_blank(),
+                                                     
+                                                    
+                                                      strip.text.x = element_text(size = 4,margin = margin(t = 2, b = 2)),
+                                                     plot.background=element_blank(),
+                                                     panel.background = element_blank(),
+                                                     panel.spacing = unit(0, "lines"),
+                                                     strip.background = element_blank()) + guides(color='none')+
+             scale_y_continuous(limits = c(0,100), breaks = c(20,80))
+           
+           
+           ,NULL,
+           ggplot(df.cms.n.filt, aes(x=Donor, y=n, fill=esig)) + 
+             geom_bar(stat='identity')+
+             facet_grid(gCMS.f~Donor , space='free',scales='free' ) +
+             theme_bw(base_size=10)+ 
+             theme(panel.grid = element_blank(), 
+                   legend.position = 'bottom',
+                   legend.background = element_blank(),
+                   legend.text = element_text(size = 6), 
+                   legend.key.size = unit(0.5, "lines"),     
+                   plot.background=element_blank(),
+                   panel.background = element_blank(),
+                   legend.title = element_blank(),
+                   
+                   axis.title.x =  element_blank(),
+                   axis.text.x =  element_blank(),
+                   axis.ticks.x =  element_blank(),
+                   
+                   
+                   panel.spacing = unit(0, "lines"),
+                   strip.text.x = element_blank(),
+                   strip.background = element_blank()
+             )+ labs(y='n cells')+
+             guides(color='none',fill='none')+
+             scale_fill_manual(values =  
+                                 color.set, na.value = 'grey'
+             )
+           ,ncol = 1, align = 'hv', axis = "rlbt", 
+           rel_heights =c(0.3,-0.05,0.7)) 
+       
+nmf.tally.gCMS.plot
+
+ggsave(file.path(basedir, "/results/fig/FIG3h.nmf.tally.gCMS.svg"), plot = 
+         nmf.tally.gCMS.plot
+       , device = "svg", height = 65,width = 65, units = 'mm', dpi=72 )
+
+
+ggplot(df.cms %>% filter(Donor %in% df.cms.n.filt$Donor), aes(x = umap_1, y = umap_2)) +
+  
+  geom_point(size=0.01, aes(color = Top_NMF)) +
+  geom_label_repel(data = centroids %>% filter(donor %in% df.cms.n.filt$Donor), aes(x = x_centroid, y = y_centroid, label = donor), 
+                   size=2,   box.padding = 0.5, force = 0.5, max.time = 4,  min.segment.length = 0, max.overlaps =15) +
+  theme_void() +  # removes all axes and background
+  scale_color_manual(values =  
+                       color.set, na.value = 'white'
+                     
+                     
+  ) + 
+  guides(fill='none',color='none')+
+  theme(
+    panel.border = element_blank(),
+    plot.margin = margin(t = 0, r = 0, b = 0, l = 0),
+    plot.background = element_blank()
+  ) 
+
+
+```
+

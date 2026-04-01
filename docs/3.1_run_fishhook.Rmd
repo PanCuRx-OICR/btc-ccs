@@ -1,0 +1,520 @@
+# Analyze recurrence and impact of structural variants
+Here, we want to find structural variants that reccur more than expected using fishhook. The positive control here is FGFR2 (fusions). We found a ton of hits but many of them seemed suspicious as functional drivers. So we overlapped the recurrence analysis with strctural variants that have a significant effect on expression (this is the same method undelrying the identification of expression quatitiative trait loci eQTL in germline analyses). The eQTL analysis also returned a ton of hits, but many were very rare with huge effect sizes. We also look at extrachromosomal DNA in this analysis. 
+
+
+
+## Data prep
+Pull data from hpc
+
+```{r}
+#library(devtools)
+#devtools::install_github('mskilab-org/gUtils')
+#devtools::install_github('mskilab-org/fishHook')
+#devtools::install_github('mskilab-org/gTrack')
+#devtools::install_github('mskilab-org/skitools') ##corrupt
+#BiocManager::install("ggbio")
+
+suppressPackageStartupMessages({
+
+  library(rtracklayer)
+  library(gTrack)
+  library(BSgenome)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(ggbio)
+  library(GenomicRanges)
+  library(data.table)
+  library(dplyr)
+  library(reshape2)
+  library(circlize)
+  library(tidyr)
+  library(PNWColors)
+  library(ggrepel)
+  
+})
+
+'%ni%' <- function(x,y)!('%in%'(x,y))
+basedir = '~/Documents/scripts/github/btc-ccs/'
+secdir = '~/Documents/scripts/github/evolution/'
+hpcdir = '/Volumes/pcsi/users/fbeaudry/more.data/'
+
+source( file.path(basedir, "bin/integrated_driver.functions.R"))
+
+sample_list <- read.table(file.path(basedir,'/source_data/sample.list.txt'), header=F)
+
+rerun.pulls = F
+if(rerun.pulls){
+  first.sv = T
+
+  for(tumour_id in sample_list$V2){
+    cat('processing ',tumour_id,'\n')
+    donor_id <- sample_list$V1[sample_list$V2 == tumour_id]
+    
+    sv.cnv.file <- paste0(hpcdir,tumour_id,'/sv.strict/',tumour_id,'.sv.cnv.txt')
+    
+    if(file.exists(sv.cnv.file)){
+      sv.cnv <- fread(sv.cnv.file)
+      
+      if(first.sv ){
+        full.sv.cnv<-sv.cnv
+        first.sv=F
+      }else{
+        full.sv.cnv<-rbind.data.frame(full.sv.cnv,sv.cnv)
+      }
+    } else {
+      cat('skipping ',sv.cnv.file,'\n')
+    }
+
+  }
+  
+  full.sv.cnv$chr <- factor(full.sv.cnv$CHROM, levels = paste0('chr', c(c(1:22), 'X', 'Y')))
+  
+  write.table(
+    full.sv.cnv,
+    file = file.path(secdir,'/results/sv.cnv.txt'),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+
+}
+
+```
+
+
+## breakpoint eQTL
+Find structural variants that have a significant (and large) impact on nearby gene expression (+- 5000bp)
+
+```{r}
+
+predicted.w.score <- fread(file.path(basedir,'/results/all.eCMS.txt') )
+predicted.w.score <- predicted.w.score %>% filter(`Sample Source(FFPE, FF)` == 'FF')
+
+full.sv.cnv <- fread(file.path(secdir,'/results/sv.cnv.txt'))
+
+all.LBR.rna.df <- fread(file.path(basedir,"/results/rna.tpm.ff.txt"), header = T)
+all.LBR.rna <- as.matrix(all.LBR.rna.df[,-1])
+rownames(all.LBR.rna) <- all.LBR.rna.df$gene_name
+
+gene_set <- fread(file.path(basedir,'/source_data/fgs.txt'))
+gene_set$Chr <- paste0('chr', gene_set$Chr)
+gene_list <- gene_set$gene_name[gene_set$biotype=="protein_coding" & 
+                                  gene_set$Length >= 500 &
+                                  gene_set$Chr %in% paste0('chr',c(1:22)) &
+                                  gene_set$gene_name %in% rownames(all.LBR.rna)
+]
+
+# ~ mean(gene_set$Length)
+WINDOW_SIZE = 5000
+
+run.eqtl = F
+if(run.eqtl){
+  
+  first.loop = T
+  for(this.gene in gene_list){
+    
+    rearranged.tumours <- get.sv.window(this.gene, gene_set, WINDOW_SIZE, full.sv.cnv)
+    
+    this_rna <- all.LBR.rna[this.gene,]
+    this_rna_full <- as.data.frame(this_rna)
+    this_rna_full$tumour <- rownames(this_rna_full)
+    
+    this_rna_full$is.sv <- 0
+    this_rna_full$is.sv[this_rna_full$tumour %in% rearranged.tumours$tumour] <- 1
+    
+    for(this.cms in c('all','CMS-A','CMS-B')){
+      
+      if(this.cms %in% c('CMS-A','CMS-B')){
+        
+        this_rna_t <- this_rna_full %>% filter(tumour %in% predicted.w.score$sample[predicted.w.score$rna_class == this.cms])
+        
+      } else {
+        this_rna_t <- this_rna_full 
+      }
+      
+      if(all(sum(this_rna_t$is.sv) > 2 & sum(this_rna_t$this_rna) > 1) & sum(this_rna_t$is.sv) < nrow(this_rna_t)){
+          
+        this_rna_t <- this_rna_t %>%
+          group_by(is.sv) %>%
+          mutate(weight = 1 / n()) %>%
+          ungroup()
+        
+        this_rna_t$weight_prop <- this_rna_t$weight / sum(this_rna_t$weight )
+        
+        tpm.sv.lm <- lm(log(as.numeric(this_rna) + 1) ~ is.sv, data=this_rna_t, weights = this_rna_t$weight_prop)
+        tpm.sv.lm.summary <- summary(tpm.sv.lm)
+        
+        this.length = (gene_set$End[gene_set$gene_name == this.gene] + WINDOW_SIZE) - (gene_set$Start[gene_set$gene_name == this.gene] - WINDOW_SIZE)
+        
+        this.p <- cbind.data.frame('gene'=this.gene, 
+                                   
+                                   'chr'=gene_set$Chr[gene_set$gene_name == this.gene], 
+                                   'win.start'=gene_set$Start[gene_set$gene_name == this.gene] - WINDOW_SIZE, 
+                                   'win.end'=gene_set$End[gene_set$gene_name == this.gene] + WINDOW_SIZE, 
+                                   'true_window_size' = this.length,
+                                   'n'=length(unique(rearranged.tumours$tumour)),
+                                   
+                                   'lm.p'= tpm.sv.lm.summary$coefficients[2,4],
+                                   'lm.fstat' = tpm.sv.lm.summary$fstatistic[['value']],
+                                   'lm.estimate' = tpm.sv.lm.summary$coefficients[2,1],
+                                   'lm.tstat' = tpm.sv.lm.summary$coefficients[2,3]
+        )
+        
+  
+        if(first.loop){sv.eqtl <- this.p; first.loop=F} else {sv.eqtl <- rbind.data.frame(sv.eqtl, this.p)}
+      
+      }
+      
+    }
+    
+  }
+
+  write.table(
+    sv.eqtl,
+    file = paste0(basedir, "/results/sv.eqtl.txt"),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+}
+
+sv.eqtl <- fread(paste0(basedir, "/results/sv.eqtl.txt"))
+
+sv.eqtl$eqtl.fdr <- p.adjust(sv.eqtl$lm.p, method = "BH")
+
+sv.eqtl$chr_fac <- factor(gsub("chr","",sv.eqtl$chr), levels=c(1:22,'X'))
+
+large.sv.eqtl <- sv.eqtl %>% filter(eqtl.fdr < 0.05 & abs(lm.estimate) > 1)
+
+ggplot(sv.eqtl %>% filter(cms != 'all'), aes(y=-log(eqtl.fdr), x=win.start)) + 
+  
+  geom_line()+
+  facet_grid(.~chr_fac, space='free',scales='free')+
+  
+  geom_label_repel(aes(label=gene,color=cms),    data = ~ subset(., eqtl.fdr < 0.05 & abs(lm.estimate) > 1), size=2, 
+                  box.padding = 1, force = 4, max.time = 2,  min.segment.length = 0) +
+  
+  geom_point(   data = ~ subset(., eqtl.fdr < 0.05 & abs(lm.estimate) > 1), aes(color=cms, size=abs(lm.estimate) )) +
+  
+  scale_color_manual(values = c(
+    "all" = 'grey',
+    "CMS-B"    = "#EDA71A" , 
+    "CMS-A" = "#04597C" 
+  )) +
+  theme_bw(base_size=12) +
+  theme(strip.background = element_blank(),
+        
+        panel.spacing.y = unit(0,'lines'),
+        legend.position="top",
+        
+        axis.title.y =element_blank(),
+        axis.text=element_blank(),
+        axis.ticks  =element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill='transparent'), #transparent panel bg
+        plot.background = element_rect(fill='transparent', color='transparent'), #transparent plot bg
+        panel.border = element_blank(),
+        
+        #strip.text.x = element_blank(),
+        strip.text.y = element_text(size = 18, angle = 0),
+        strip.placement = "outside") + coord_cartesian(clip = "off")
+
+sv.eqtl.cms <- sv.eqtl %>% filter(cms != 'all' & eqtl.fdr < 0.05 & n < 50 )
+sv.eqtl.cms$effect.size.mod <- abs(sv.eqtl.cms$lm.estimate)
+sv.eqtl.cms$effect.size.mod[sv.eqtl.cms$cms == 'CMS-A'] <- -sv.eqtl.cms$effect.size.mod[sv.eqtl.cms$cms == 'CMS-A']
+
+eqtl.n <- sv.eqtl.cms %>% group_by(gene) %>% tally()
+
+sv.eqtl.cms <- sv.eqtl.cms %>% filter(gene %ni% eqtl.n$gene[eqtl.n$n > 1])
+
+sv.eqtl.cms$Gene <- factor(sv.eqtl.cms$gene, levels=sv.eqtl.cms$gene[order(sv.eqtl.cms$effect.size.mod)])
+
+sv.eqtl.plot <- 
+ggplot(sv.eqtl.cms, aes(x = effect.size.mod, y = -log(eqtl.fdr))) +
+  geom_hline(yintercept = 0, color='grey')+
+  
+  #geom_point(aes(color=cms, size=-log(eqtl.fdr))) +
+  geom_point(aes(color=cms, size=n)) +
+  geom_point(aes( size=n), shape=1, color='white', stroke = 0.5, alpha=0.2) +
+  
+  geom_label_repel(aes(label=gene,color=cms),    data = ~ subset(., gene %in% c('TERT','CDK6','FGFR2','MDM2')), size=2, 
+                   box.padding = 1, force = 4, max.time = 2,  min.segment.length = 0) +
+  
+
+  scale_color_manual(values = c(
+    "all" = 'grey',
+    "CMS-B"    = "#EDA71A" , 
+    "CMS-A" = "#04597C" 
+  )) +
+  theme_bw(base_size=10) +
+  guides(color='none')+
+  scale_size(range = c(1,8))  +
+  
+  theme(
+        
+    plot.margin = unit(c(2, 0, 0, 2), "mm"),
+   # axis.text.x=element_blank(),
+   # axis.ticks.x  =element_blank(), 
+legend.position = 'bottom',
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill='transparent'), #transparent panel bg
+        plot.background = element_rect(fill='transparent', color='transparent'), #transparent plot bg
+
+) + labs(x='eQTL effect size, CMS-specific', y='-log FDR', size='sv n')
+
+sv.eqtl.plot
+
+ggsave(paste0(basedir, "/results/fig/FIGS2b.sv.eqtl.svg"), plot = 
+         sv.eqtl.plot
+, device = "svg",width = 100, height = 95 , units='mm' , dpi=72 )
+
+sv.eqtl.cms %>% filter( gene %in% c('TERT','EGFR','CDK6','FGFR2','MDM2','TP53','DCDC2','RB1'))
+
+```
+
+## ecDNA
+How common is extra-chromosomal DNA and how does it align with our eQTL?
+
+```{r}
+
+split_string <- function(input_string) {
+  # Remove the square brackets and single quotes, then split by comma
+  items <- strsplit(gsub("\\['|\\']", "", input_string), ",")[[1]]
+  # Trim any leading or trailing whitespace from each item
+  items <- trimws(items)
+  items <- gsub("'", "", items)
+  return(items)
+}
+
+rerun.pulls = F
+local.run = T
+
+if(rerun.pulls){
+  
+  sample_list <- read.table(file.path(basedir,'/source_data/sample.list.txt'), header=F)
+
+  first.loop = T
+  first.ecDNA = T
+  for(tumour_id in sample_list$V2){
+    
+    cat('\n\nprocessing ',tumour_id,'\n')
+    donor_id <- sample_list$V1[sample_list$V2 == tumour_id]
+    
+    #cluster here will be a mush of ("population/tumour-specific") hotspots
+    #and complex rearrangements
+    #should I stratify clusters for VAF?
+    this.sv.cnv.path <- paste0(hpcdir,tumour_id,'/sv.strict/',tumour_id,'.sv.cnv.txt')
+    
+    #amplicon-architect, by definition, filters for CNV clusters (first) 
+    #so SV-only clusters won't show up
+    this.sample.amplicons.path <- paste0(hpcdir
+                                         ,tumour_id,'/amplicon/results/',tumour_id,'_classification/',
+                                         tumour_id, '_result_table.tsv')
+    
+    if(file.exists(this.sv.cnv.path) & file.exists(this.sample.amplicons.path)){
+      
+      this.sv.cnv <- fread(this.sv.cnv.path)
+      
+      this.sample.amplicons <- fread(this.sample.amplicons.path)
+      this.sample.amplicons <- this.sample.amplicons[!is.na(this.sample.amplicons$`AA amplicon number`),]
+      
+      if(nrow(this.sample.amplicons) > 0){
+        
+        for(this.amplicon.id in this.sample.amplicons$`Feature ID`){
+          
+          this.bed.file <- this.sample.amplicons$`Feature BED file`[this.sample.amplicons$`Feature ID` == this.amplicon.id]
+          
+          #if R is running on cluster, set to False
+          if(local.run){this.bed.file <- gsub('/.mounts/labs/PCSI/','/Volumes/pcsi/',this.bed.file)}
+          
+          #TODO: this was a patch for a change in directory structure (25/06/20), 
+          #can eventually be deleted
+          if(!file.exists(this.bed.file)){this.bed.file <- gsub('/amplicon/','/amplicon/results/',this.bed.file)}
+          
+          ##read bed file
+          this.bed <- fread(this.bed.file)
+          
+          ##check how often AA calls overlap with SV calls
+          for(this.chrom in unique(this.bed$V1)){ 
+            
+            sub.bed <- this.bed[this.bed$V1 == this.chrom,]
+            this.start <- sub.bed$V2[1] - 200000
+            this.end <- sub.bed$V3[nrow(sub.bed)] + 200000
+            
+            this.caught.in.cluster <- this.sv.cnv[this.sv.cnv$CHROM == this.chrom & 
+                                                    this.sv.cnv$POS >= this.start & 
+                                                    this.sv.cnv$POS <= this.end]
+            
+            this.caught.in.cluster$amplicon.id <- this.sample.amplicons$`AA amplicon number`[this.sample.amplicons$`Feature ID` == this.amplicon.id]
+            this.caught.in.cluster$amplicon.type <- this.sample.amplicons$Classification[this.sample.amplicons$`Feature ID` == this.amplicon.id]
+            
+            if(nrow(this.caught.in.cluster) == 0){
+              cat('no SVs at all in ',this.amplicon.id,'\n')
+            }
+            
+            if(first.loop){caught.in.cluster <- this.caught.in.cluster; first.loop = F} else {
+              caught.in.cluster <- rbind.data.frame(caught.in.cluster, this.caught.in.cluster)
+            }
+          }
+          
+          ## pull ecDNA out seperatly 
+          if(this.sample.amplicons$Classification[this.sample.amplicons$`Feature ID` == this.amplicon.id] == 'ecDNA'){
+            
+            cat('ecDNA found!\n')
+            thi.gene_list <- split_string(this.sample.amplicons$`All genes`[this.sample.amplicons$`Feature ID` == this.amplicon.id])
+            this.ecdna.genes <- cbind.data.frame(tumour_id, this.amplicon.id, thi.gene_list )
+            
+            if(first.ecDNA){ecdna.genes <- this.ecdna.genes; first.ecDNA = F} else {
+              ecdna.genes <- rbind.data.frame(ecdna.genes, this.ecdna.genes)
+            }
+          }
+        }
+      } else { cat('no amplicons')}
+    } else { cat('file missing')}
+  }
+  
+
+  write.table(
+    ecdna.genes,
+    file = file.path(basedir,'/results/ecdna.genes.txt'),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+  
+}
+
+ecdna.genes <- fread(file.path(basedir,'/results/ecdna.genes.txt'))
+
+ecdna.genes.tally <- ecdna.genes %>% group_by(tumour_id, thi.gene_list) %>% tally()
+ecdna.genes.tally <- ecdna.genes.tally %>% group_by( thi.gene_list) %>% tally()
+ecdna.genes.tally <- ecdna.genes.tally %>% filter(thi.gene_list != '[]' )
+
+gene_set <- fread(file.path(basedir,'/source_data/fgs.txt'))
+ecdna.genes.tally <- left_join(ecdna.genes.tally, gene_set, by=c('thi.gene_list'='gene_name'))
+
+ggplot(ecdna.genes.tally %>% filter(!is.na(Chr)), aes(x=Start, y=n)) +
+  geom_point()+
+  geom_line()+
+  facet_grid(.~Chr)+
+  theme_bw() + theme(panel.grid = element_blank(),
+                     axis.text.x = element_blank(),
+                     
+                     strip.background = element_blank())
+
+ecdna.genes.tally %>% arrange(desc(n)) %>% filter(Chr == 12)
+ecdna.genes.tally %>% arrange(desc(n)) %>% filter(Chr == 7)
+
+```
+
+## run fishhook
+Run recurrence analysis and combine with eQTL results. 
+
+You may notice RHD comes up as the second hit after FGFR2. This is statistically accurate but upon manual review of some of the cases with this variant, we found it was just a common germline variant, aka the one defining blood groups. This also felt like a good, although unexpected, proof-of-concept (although suggests some leakage of germline variants into our somatic sv calls).
+
+
+```{r}
+
+run_fishhook = F
+
+if(run_fishhook){
+  
+  ## careful, the fishHook package over-writes a bunch of base functions 
+  ## and you basically have to restart your environment to run anything else
+  library(fishHook)
+  packageVersion('fishHook')
+  
+  dndscv_reference_data_path <- file.path(secdir,'/code/src/dndscv_data/data/RefCDS_human_GRCh38_GencodeV18_recommended.rda')
+  load(file=dndscv_reference_data_path)
+  
+  genes <- gr_genes
+  current_seqlevels <- seqlevels(genes)
+  new_seqlevels <- paste0('chr', current_seqlevels)
+  seqlevels(genes) <- new_seqlevels
+  
+  ## Reading in mutation calls from WGS
+  
+  raw.full.sv.cnv <- fread(file.path(secdir,'~/Documents/scripts/github/evolution/results/sv.cnv.txt'))
+  
+  for(this.cms in c('all')){
+    
+
+    full.sv.cnv <- raw.full.sv.cnv 
+
+    mutations.wgs <- GRanges(
+      seqnames = full.sv.cnv$CHROM,
+      ranges = IRanges(start = full.sv.cnv$POS, end = full.sv.cnv$POS),
+      Variant_Type = full.sv.cnv$SV,
+      uuid = full.sv.cnv$tumour
+    )
+    
+    genome(mutations.wgs) <- "hg38"
+    seqlengths(mutations.wgs) <- seqlengths(BSgenome.Hsapiens.UCSC.hg38)[seqlevels(mutations.wgs)]
+    
+    tiles = gr.tile(seqinfo(mutations.wgs), WINDOW_SIZE)
+    
+    # %+% is a gUtils operator that shifts ech GRange by given distance
+    # Here we create additional GRanges by shifting all tiles by 5000 Kb
+    supertiles = c(tiles, tiles %+% 5000)
+    
+    ## Annotating by nearest gene
+    supertiles$nearest.gene = genes$names[nearest(supertiles, gr.stripstrand(genes))]
+  
+    
+    ## Supertiles
+    fish.supertiles.snv = Fish(hypotheses = supertiles, 
+                               events = mutations.wgs,  
+                               idcol = 'uuid', 
+                               #use_local_mut_density = TRUE, 
+                               mc.cores = 40)
+    
+    
+    
+    fish.supertiles.snv = fish.supertiles.snv[fish.supertiles.snv$data$frac.eligible > 0.75, ]
+    fish.supertiles.snv$score()
+    
+    p1 = fish.supertiles.snv$qqp(plotly = FALSE)
+    fish.res <- gr2dt(fish.supertiles.snv$res)[order(p), ]
+    
+    fish.res.gene <- fish.res %>%
+      group_by(nearest.gene) %>%
+      filter(fdr == min(fdr) & p == min(p)) %>% 
+      dplyr::select(nearest.gene, p   , fdr ,count, effectsize, count.pred)
+    
+    fish.res.gene <- unique(fish.res.gene)
+    fish.res.gene$cms <- this.cms
+    
+    if(this.cms == 'all'){all.fish.res.gene <- fish.res.gene} else {
+      all.fish.res.gene <- rbind.data.frame(all.fish.res.gene, fish.res.gene)
+    }
+
+  }
+  
+  write.table(
+    all.fish.res.gene,
+    file = file.path(basedir, "/results/fish.res.gene.txt"),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+}
+
+all.fish.res.gene <- fread(file.path(basedir, "/results/fish.res.gene.txt"))
+
+sv.fishhook <- left_join(sv.eqtl, all.fish.res.gene, by=c('gene'='nearest.gene','cms'='cms'))
+
+ggplot(sv.fishhook %>% filter(cms == 'all'), aes(x=-log(eqtl.fdr),-log(fdr))) + 
+  geom_point()+
+  geom_point(aes(color=cms),  data = ~ subset(., (eqtl.fdr < 0.05 & fdr < 0.05)  )) +
+  geom_label_repel(aes(label=gene),    data = ~ subset(., (eqtl.fdr < 0.05 & fdr < 0.05)  ), size=5) +
+  theme_bw(base_size=22) + 
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color='transparent') #transparent plot bg
+  ) + 
+  
+  
+  scale_color_manual(values = c(
+    "all" = 'grey',
+    "CMS-B"    = "#EDA71A" , 
+    "CMS-A" = "#04597C" 
+  )) 
+
+
+
+```

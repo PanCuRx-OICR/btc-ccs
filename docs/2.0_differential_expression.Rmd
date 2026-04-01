@@ -1,0 +1,265 @@
+# Variance and bias in gene expression
+We've established that CCS plays a role in survival across multiple datasets, and has something to do with anatomical location of the primary tumor. Let's dive further into the whole genome expression data to find out more about this.
+
+## Quantify variance by location and CCS
+Here, we analytically compare the variance explained by anatomical location and compare it to variance explained by CCS.
+
+```{r}
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(DESeq2)
+  library(FactoMineR)
+  library(vegan)
+  library(cowplot)
+  library(ggrepel)
+  library(ggplot2)
+  library(PNWColors)
+})
+
+`%ni%` <- Negate(`%in%`)
+
+basedir = '~/Documents/scripts/github/btc-ccs/'
+secdir = '~/Documents/scripts/github/evolution/'
+source( file.path(basedir, "bin/BTC.functions.R"))
+
+gene_set <- fread(file.path(basedir,'/source_data/fgs.txt'))
+
+predicted.w.score <- fread(file.path(basedir,'/results/all.eCMS.txt') )
+predicted.w.score <- predicted.w.score %>% filter(`Sample Source(FFPE, FF)` == 'FF' & !is.na(rna_class))
+predicted.w.score$rna_class <- gsub('-','', predicted.w.score$rna_class)
+
+timeline.outcome <- fread(file.path(secdir,"/results/timeline.outcome.txt"))
+timeline.outcome$BTCID <- gsub('_','',timeline.outcome$BTC_ID)
+length(unique(timeline.outcome$BTCID))
+
+na_values <- c("No information", "Not available", "Not Done", "Unknown", "Not stated", "Not applicable", "","N/A")
+
+timeline.outcome <- timeline.outcome %>%
+  mutate(across(Overall_Stage_at_Diagnosis, ~replace(., . %in% na_values, NA)))
+
+
+timeline.outcome <- full_join(timeline.outcome, predicted.w.score, by=c('BTCID'='BTCID'))
+covar <- timeline.outcome %>% dplyr::select(BTC_ID, sample, rna_class ,  
+                                            Overall_Stage_at_Diagnosis, Location, progression)
+
+this_tpm <- fread(file.path(basedir,"/results/rna.tpm.ff.txt"))
+
+pca <- PCA(t(this_tpm[,-c(1)]), graph = F)
+pca_labs <- cbind.data.frame(sample_id=colnames(this_tpm[,-c(1)]),
+                             pca$ind$coord
+)
+
+pca_labs <- left_join(pca_labs, covar, by=c('sample_id'='sample'))
+
+
+allOfit_pca_labs.filt <- pca_labs %>% filter(!is.na(rna_class) & !is.na(Location))
+
+locations <-allOfit_pca_labs.filt$Location
+names(locations)  <- allOfit_pca_labs.filt$sample_id
+rna_class <-allOfit_pca_labs.filt$rna_class
+names(rna_class)  <- allOfit_pca_labs.filt$sample_id
+
+tpm.t <- t(this_tpm[,-c(1)])
+tpm.t.filt <- tpm.t[allOfit_pca_labs.filt$sample_id,]
+
+# PCA as RDA (all.sigs.frac.filt): identical ordination to PCA when centered/scaled
+pca_rda <- rda(tpm.t.filt, scale = TRUE)
+
+
+# Test fit on top 2 axes
+r.tab = NULL
+for(i in c(1:3)){
+
+  fit2_f1 <- envfit(pca_rda,locations[allOfit_pca_labs.filt$sample_id], permutations = 999, choices = i:i)
+  fit2_f2 <- envfit(pca_rda, rna_class[allOfit_pca_labs.filt$sample_id], permutations = 999, choices = i:i)
+
+  this.r.tab <- rbind.data.frame ( cbind('i'=as.numeric(i),
+               'f'='location',
+               'r'=unlist(fit2_f1$factors$r),
+               'p'=unlist(fit2_f1$factors$pvals)
+  ),
+  cbind('i'=as.numeric(i),
+        'f'='eCCs',
+        'r'=unlist(fit2_f2$factors$r),
+        'p'=unlist(fit2_f2$factors$pvals)
+  )
+  )
+  if(is.null(r.tab)){
+    r.tab <- this.r.tab
+  } else{
+    r.tab <- rbind.data.frame(r.tab,this.r.tab)
+  }
+  
+}
+
+r.tab$p <- as.numeric(r.tab$p)
+r.tab$r <- as.numeric(r.tab$r)
+
+r.tab$p.sig <- NA
+r.tab$p.sig[r.tab$p < 0.05] <- r.tab$p[r.tab$p < 0.05]
+
+r.tab$pc.i <- paste0('PC',r.tab$i)
+r.tab$pc.i <- factor(r.tab$pc.i, levels=rev(paste0('PC',c(1:3)) ))
+r.tab
+
+EXPCA.plot <- 
+plot_grid(
+ggplot(data=pca_labs %>% filter(!is.na(rna_class) & !is.na(Location)) ,aes(y=Dim.3,x=Dim.1)) +
+  
+  stat_ellipse( geom = "polygon", level=0.95, aes(fill = rna_class), alpha=0.1) +
+  
+  geom_point(size=1, shape=21, stroke = 1, aes(color=Location,fill=rna_class)) + 
+  
+  labs(
+    x=paste("PC1 (",round(pca$eig[1,2],digits=2),"%)",sep=""),
+    y=paste("PC3 (",round(pca$eig[3,2],digits=2),"%)",sep="")) +
+  theme_bw(base_size=10) + 
+ #guides(fill='none',color='none')+
+  
+  theme(
+    plot.margin = unit(c(0, 0, 0, 0), "mm"),
+    panel.background = element_blank(),
+    panel.border = element_blank(),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = 'top'
+  ) +
+  
+  #ylim(-90,90)+
+  #coord_sf()  +
+  scale_fill_manual(  values=c(
+    "CMSB"    = "#EDA71A" , 
+    "CMSA" = "#04597C" 
+    
+  ), na.value = 'black') +
+  scale_color_manual(  values=c(
+    "CMSB"    = "#EDA71A" , 
+    "CMSA" = "#04597C" ,
+    'HCC-CCA' = "#b4b4b4ff",
+    'Perihilar_CCA_pCCA' = "#e59d54ff",
+    'Intrahepatic_CCA_iCCA' = "#fbcc7aff",
+    'Distal_CCA_dCCA' = "#ba7a44ff",
+    'Gallbladder' = "#855b40ff"
+    
+  ), na.value = 'black')
+,NULL,
+ggplot(r.tab %>% filter(i != 2), aes(y=pc.i, x=r, shape=f)) + 
+  geom_point(aes( size=-log(p.sig)), fill='white') + 
+  geom_line(aes(group=pc.i), color='white',
+            arrow = arrow(length = unit(1, "mm"), type = "closed"), 
+  )+
+  geom_line(aes(group=pc.i) )+
+  scale_shape_manual(values = c(16,21)) +
+  scale_size(range = c(0.25, 2.5)) +
+  theme_bw()+
+  theme(
+    plot.margin = unit(c(0, 0, 0, 5), "mm"),
+    panel.background = element_blank(),
+    #panel.border = element_blank(),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = 'bottom'
+  ) + xlim(0,1) + labs(x=expression(r^2~ "of constrained variance"))
+,   rel_heights = c(0.6,-0.24,0.4), ncol = 1, align = 'hv', axis = "rlbt")
+
+
+ggsave(file.path(basedir,"/results/fig/FIG3A.EXPCA.svg"),plot =
+  EXPCA.plot       
+, device = "svg", height = 85,width = 45 , units='mm')
+
+```
+
+```{r, fig.asp=85/45, fig.width=3, fig.align="center"}
+EXPCA.plot
+```
+
+
+## Differential Gene Expression
+Markers assembled from manual review of the litterature.
+
+```{r}
+
+good.genes <- gene_set$gene_name[gene_set$Chr %in% c(1:22) & gene_set$biotype == 'protein_coding' & gene_set$Length > 500]
+dup.genes <- table(good.genes)[table(good.genes) > 1]
+good.genes <- good.genes[good.genes %ni% names(dup.genes)]
+
+rna_raw <-  fread(file.path(secdir,"/results/rna.htseq.all.txt"))
+this_rna <- as.matrix(rna_raw[,-1])
+rownames(this_rna) <- rna_raw$gene_name
+this_rna <- this_rna[good.genes,]
+
+confident.samples <- intersect(colnames(this_rna), predicted.w.score$sample)
+confident.rna.ff <- this_rna[,confident.samples]
+
+run.deseq = F
+if(run.deseq){
+  
+  cds = DESeqDataSetFromMatrix(countData = confident.rna.ff, 
+                               colData = expdesign, 
+                               design = ~ btc)
+  
+  cds <- DESeq(cds)
+  res <- results(cds, contrast = c("btc", c("CMSA","CMSB")))
+  
+  res.df <- as.data.frame(res)
+  res.df$gene_name <- rownames(res.df)
+  
+  res.df <- left_join(res.df, gene_set, by=c('gene_name'='gene_name'))
+  
+  write.table( res.df,  
+               file = file.path(basedir,'/results/cms.deseq.txt'), 
+               row.names = F,col.names = T, quote = FALSE, sep = "\t", append =F)
+} else {
+  res.df <- fread(file.path(basedir,'/results/cms.deseq.txt'))
+}
+
+multiple.testing <- nrow(res.df) 
+
+CMSA_MARKERS = c('HHEX','PROX1','CFTR','BICC1','SPP1', 'DCDC2', 'SCTR','ONECUT1','ALB','NCAM1', 
+                 'HNF4A','ELF3','HNF1B','IGFBP2','SLC3A1','CD24','PROM1','TNFSF12',
+                 'TNFRSF12A','GPC3','ARG1','CPS1','TTR','APOH') 
+CMSB_MARKERS = c('S100P', 'MKI67','SALL4','SSTR1','MUC2','MUC5AC','CDX2','KRT20','PTGS2','CEACAM5', 
+                 'MUC17','KRT19','KRT7','CDK1','CD44') 
+
+#'FOXL1','SERPINA1',
+
+diffexp.plot <- 
+   ggplot(res.df %>% filter(biotype == 'protein_coding' ), aes(x=log2FoldChange, y=-log(padj ))) + 
+      geom_hline(yintercept = -log(0.05 / multiple.testing), color='grey',linetype='dotted')+
+     
+     geom_point( data = ~ subset(., padj >= (0.05 / multiple.testing) & gene_name %in% sample(res.df$gene_name, round(nrow(res.df) * 0.2), replace = F )),  color='grey50') + 
+
+     geom_point( data = ~ subset(.,  padj < (0.05 / multiple.testing) & log2FoldChange > 0 & gene_name %in% sample(res.df$gene_name, round(nrow(res.df) * 0.5), replace = F )),   
+                 color=pnw_palette(name="Bay", n=19 )[c(1)]) + 
+     geom_point( data = ~ subset(.,  padj < (0.05 / multiple.testing) & log2FoldChange < 0 & gene_name %in% sample(res.df$gene_name, round(nrow(res.df) * 0.5), replace = F )),   
+                 color=pnw_palette(name="Bay", n=19 )[c(10)]) + 
+         
+     geom_label_repel(  data = ~ subset(., gene_name %in% c(CMSA_MARKERS,
+                                                            CMSB_MARKERS) & padj < (0.001 / multiple.testing)), 
+                        aes(label=gene_name), 
+                        size=2,   box.padding = 0.5, force = 0.5, max.time = 4,  min.segment.length = 0, max.overlaps =15) +
+     
+     geom_point( data = ~ subset(., gene_name %in% CMSA_MARKERS & padj < (0.001 / multiple.testing)),   
+                 color='black', fill=pnw_palette(name="Bay", n=19 )[c(1)], shape=21) + 
+     geom_point( data = ~ subset(., gene_name %in% CMSB_MARKERS & padj < (0.001 / multiple.testing)),   
+                 color='black', fill=pnw_palette(name="Bay", n=19 )[c(10)], shape=21) + 
+     
+     guides(color='none')+
+     theme_bw(base_size=10) +
+     theme(plot.background = element_blank(), 
+           panel.background = element_blank(), 
+           plot.margin = unit(c(0, 0, 0, 0), "mm"),
+           
+           panel.grid =  element_blank()) 
+   
+diffexp.plot
+
+
+```
+

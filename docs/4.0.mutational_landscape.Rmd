@@ -1,0 +1,354 @@
+# Evaluate complex biomarkers (HRD, MSI, TMB)
+Here, we assemble complex biomarker scores including homologous recombination deficiency (HRD), microsattelite instability (MSI), and tumor mutational burden (TMB).
+
+## Assemble single sample calls into cohort
+
+```{r}
+
+suppressPackageStartupMessages({
+
+library(data.table)
+library(ggplot2)
+library(mclust)
+library(dplyr)
+library(ggrepel)
+library(cowplot)
+library(survival)
+library(ggsurvfit)
+library(PNWColors)
+library(tidyr)
+library(EnvStats) #qqPlot
+library(PNWColors)
+})
+
+'%ni%' <- function(x,y)!('%in%'(x,y))
+
+basedir = '~/Documents/scripts/github/btc-ccs/'
+secdir = '~/Documents/scripts/github/evolution/'
+
+source(paste0(basedir,"/bin/driver_functions.R"))
+chrLength_data <- fread(file.path(basedir,'/source_data/GRCh38_size.bed'))[c(1:23),]
+
+
+#### WRITES TO FILE ####
+ROOT_DIR = '/Volumes/pcsi/'
+sample_list <- read.table(file.path(basedir,'/source_data/sample.list.txt'), header=F)
+
+rerun.pulls = F
+if(rerun.pulls){
+
+  first.hrd = T
+  first.msi = T
+  first.summary = T
+  for(tumour_id in sample_list$V2){
+    cat('processing ',tumour_id,'\n')
+    donor_id <- sample_list$V1[sample_list$V2 == tumour_id]
+  
+
+    hrd.file <- paste0('/Volumes/pcsi/users/fbeaudry/more.data/',tumour_id,'/hrdetect/',tumour_id,'.hrd.txt')
+    
+    if(file.exists(hrd.file)){
+      this.hrd <- fread(hrd.file)
+      
+      if(first.hrd ){
+        full.hrd<-this.hrd
+        first.hrd=F
+      }else{
+        full.hrd<-rbind.data.frame(full.hrd,this.hrd)
+      }
+    } else {
+      cat('skipping ',hrd.file,'\n')
+    }
+    
+    msi.booted.file <- paste0('/Volumes/pcsi/users/fbeaudry/more.data/',tumour_id,'/msi/',tumour_id,'.msi.booted')
+    
+    if(file.exists(msi.booted.file)){
+      msi.booted <- fread(msi.booted.file)
+      
+      if(nrow(msi.booted) >0 ){
+        msi.table.tmp <- cbind.data.frame(tumour_id, median(msi.booted$V4))
+        if(first.msi){msi.table <- msi.table.tmp; first.msi=F}else{msi.table <- rbind.data.frame(msi.table,msi.table.tmp)}
+      }
+    }else {
+      cat('skipping ',msi.booted.file,'\n')
+    }
+    
+    
+    
+    summary.file <- paste0('/Volumes/pcsi/pipeline/hg38_production/',donor_id,'/',tumour_id,'/wgs/bwa/0.7.17/results/',tumour_id,'.summary.csv')
+    
+    if(!file.exists(summary.file)){
+      summary.file <- paste0('/Volumes/pcsi/pipeline/hg38_production/',donor_id,'/',tumour_id,'/wgs/bwa/0.7.17/results.old/',tumour_id,'.summary.csv')
+    }
+    
+    if(file.exists(summary.file)){
+      summary <- fread(summary.file)
+      
+      
+      if(first.summary ){
+        full.summary<-summary
+        first.summary=F
+      }else{
+        full.summary<-rbind.data.frame(full.summary,summary)
+      }
+    } else {
+      cat('skipping ',summary.file,'\n')
+    }
+    
+    
+    
+  }
+  
+
+  write.table(
+    full.hrd,
+    file = file.path(basedir,'/results/hrd.txt'),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+  
+  write.table(
+    msi.table,
+    file = file.path(basedir,'/results/msi.txt'),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+  write.table(
+    full.summary,
+    file = file.path(secdir,'/results/summary.txt'),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+  
+  
+}
+
+summary <- fread(file.path(secdir,'/results/summary.txt'))
+
+```
+
+## Microsattelite Instability
+MSI is calculated with msisensor, with a cutoff at >15% of microsattelite sites unstable defined as MSI
+
+```{r}
+
+#from grep of variants.tsv
+variants.ddr <- fread(file.path(secdir,'/results/variants.ddr.csv'))
+length(unique(variants.ddr$tumour))
+
+variants.ddr <- variants.ddr %>% filter(rarity %in% c('rare', 'novel') | mutation_class %in% c('somatic sv', 'somatic cnv') )
+
+variants.ddr$line <- 'somatic'
+variants.ddr$line[variants.ddr$mutation_class %in% c('germline snp','germline indel')]<- 'germline'
+
+variants.ddr$gene_line <- variants.ddr$gene
+variants.ddr$gene_line[variants.ddr$line == 'germline'] <- paste0('g',variants.ddr$gene[variants.ddr$line == 'germline'])
+
+
+msi <- fread(file.path(basedir,'/results/msi.txt'))
+mmr_score <- summary %>% dplyr::select(tumour, mmr_score)
+length(unique(mmr_score$tumour))
+
+msi <- left_join(msi, mmr_score,by=c('tumour_id'='tumour'))
+names(msi)[2] <- 'msi_score'
+
+MSI_GENES = c('MSH6','MLH1')
+MSI_GENES = c(MSI_GENES, paste0('g', c('MLH1')))
+
+msi.vars <- variants.ddr %>% filter(gene %in% MSI_GENES & mutation_type %ni% c('')) %>% dplyr::select(tumour,gene_line,  mutation_type )
+
+no.msi.var <- msi$tumour_id[ msi$tumour_id %ni% msi.vars$tumour]
+
+msi.vars <- rbind.data.frame(msi.vars,   
+                             cbind.data.frame('tumour'=no.msi.var, 'gene_line'='','mutation_type'=NA)
+)
+
+msi.vars <- msi.vars[msi.vars$tumour %in% msi$tumour_id,]
+
+
+msi.vars$gene_line[msi.vars$mutation_type %in% c('splicing',"translocation breakpoint","deletion breakpoint")] <- ''
+msi.vars$mutation_type[msi.vars$mutation_type %in% c('splicing',"translocation breakpoint","deletion breakpoint")] <- NA
+
+length(unique(msi.vars$tumour))
+length(unique(msi$tumour_id))
+
+msi.vars$tumour_factor <- factor(msi.vars$tumour, levels = msi$tumour_id[order(msi$msi_score)])
+msi.plot <- msi
+msi.plot$tumour_factor <- factor(msi.plot$tumour_id, levels = msi.plot$tumour_id[order(msi.plot$msi_score)])
+
+
+cowplot::plot_grid(
+  
+  ggplot(msi.vars , aes(y=gene_line, x=tumour_factor, fill=mutation_type)) + 
+    geom_tile(na.rm = TRUE)+
+    theme_bw(base_size = 16)+
+    #guides(fill='none') + 
+    labs(x='',y='', fill='')+
+    theme(#axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+      panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+      axis.text.x=element_blank(),
+      axis.ticks=element_blank(),
+      legend.position = 'top') + 
+    scale_fill_manual( values= pnw_palette(name="Cascades", n=6 ), na.translate = F)+
+    scale_y_discrete(limits =MSI_GENES  )
+  ,NULL,
+  
+  ggplot(msi.plot, aes(x=tumour_factor, y=msi_score)) + 
+    geom_hline(yintercept = 15, color='red')+
+    
+    geom_point(size=3, shape=1, color='black') + 
+    geom_point(size=2) + #aes(color=mmr_score)
+    theme_bw(base_size = 10) + 
+    guides(color='none') + 
+    
+    labs(x='Tumour Id', y='Unstable microsat. (%)', color='Hallmarks') +
+    theme(
+      #axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+      panel.grid.major.y = element_blank(), 
+      panel.grid.minor = element_blank(),
+      axis.text.x=element_blank(),
+      panel.background = element_rect(fill='transparent'), #transparent panel bg
+      plot.background = element_rect(fill='transparent', color='transparent') ,
+      
+      #axis.ticks.x=element_blank(),
+      legend.position = 'top')
+  ,
+  ncol = 1,align = 'hv', axis = "rlbt", rel_heights =  c(0.4,-0.15,0.6))
+
+msi.vars[msi.vars$tumour_factor %in% msi.plot$tumour_factor[msi.plot$msi_score > 15],]
+
+```
+
+## Homologous Recombination Deficiency
+HRD is calculated using HRDetect, with a cutoff of >92% probability as HRD+
+
+```{r}
+HRD_GENES = c('XRCC2','BRCA1','BRCA2','gBRCA2','gPALB2')
+
+hrd <- fread(file.path(basedir,'/results/hrd.txt'))
+length(unique(hrd$tumour))
+
+
+hrd.vars <- variants.ddr %>% filter(gene_line %in% HRD_GENES & mutation_type %ni% c('nonsynonymous','splicing','stopgain')) %>% dplyr::select(tumour,gene_line,  mutation_type )
+
+no.hrd.var <- hrd$tumour[ hrd$tumour %ni% hrd.vars$tumour]
+
+hrd.vars <- rbind.data.frame(hrd.vars,   
+                             cbind.data.frame('tumour'=no.hrd.var, 'gene_line'='','mutation_type'=NA)
+)
+
+hrd.vars <- hrd.vars[hrd.vars$tumour %in% hrd$tumour,]
+
+
+length(unique(hrd.vars$tumour))
+length(unique(hrd$tumour))
+
+hrd.plot <- hrd
+hrd.plot$tumour_factor <- factor(hrd.plot$tumour, levels = hrd.plot$tumour[order(hrd.plot$Probability)])
+hrd.vars$tumour_factor <- factor(hrd.vars$tumour, levels = hrd$tumour[order(hrd$Probability)])
+
+
+cowplot::plot_grid(
+  
+  ggplot(hrd.vars , aes(y=gene_line, x=tumour_factor, fill=mutation_type)) + 
+    geom_tile()+
+    theme_bw(base_size = 10)+
+    #   guides(fill='none') + 
+    labs(x='',y='',fill='')+
+    theme(#axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+      panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+      axis.text.x=element_blank(),
+      axis.ticks=element_blank(),
+      legend.position = 'top') + 
+    scale_fill_manual( values= pnw_palette(name="Cascades", n=6 ), na.translate = F)+
+    
+    scale_y_discrete(limits =HRD_GENES  )
+  ,NULL,
+  ggplot(hrd.plot, aes(x=tumour_factor, y=Probability)) + 
+    geom_hline(yintercept = 0.92, color='grey')+
+    geom_point(size=3, shape=1, color='black') + 
+    geom_point(size=2) + 
+    theme_bw(base_size = 10) + 
+    labs(x='Tumour Id', y='HRD Probability') +
+    theme(
+      #axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+      panel.grid.major.y = element_blank(), panel.grid.minor = element_blank(),
+      axis.text.x=element_blank(),
+      legend.margin = margin(t = -100, unit = "pt"),  # Adjust top margin
+      legend.spacing = unit(0, "pt"),  # Adjust spacing
+      #axis.ticks.x=element_blank(),
+      panel.background = element_rect(fill='transparent'), #transparent panel bg
+      plot.background = element_rect(fill='transparent', color='transparent') ,
+      legend.position = 'top') +
+    guides(color='none',fill='none')
+  
+  ,
+  ncol = 1,align = 'hv', axis = "rlbt", rel_heights =  c(0.4,-0.1,0.6))
+
+
+hrd.vars[hrd.vars$tumour %in% hrd.plot$tumour[hrd.plot$Probability > 0.92],]
+
+```
+
+
+## Tumor mutational burden
+TMB is calculated as the sum of all mutations divided by the genome size (3gb)
+
+```{r}
+length(unique(summary$tumour))
+
+summary$tmb <- (summary$indel_count + summary$snv_count) / 3000
+
+tmb <- summary %>% dplyr::select(tumour, tmb,  indel_count, snv_count) 
+
+tmb$indel_by_tmb <- (tmb$indel_count ) / (tmb$tmb * 3000)
+
+
+full.sv.cnv <- fread(file.path(secdir,'/results/sv.cnv.txt'))
+length(unique(full.sv.cnv$tumour))
+
+full.sv.cnv$SV[is.na(full.sv.cnv$SV)] <- 'BND'
+full.sv.cnv$SV[full.sv.cnv$SV == 'INS'] <- 'DUP'
+
+sub.sv.cnv <- full.sv.cnv %>% filter(VAF > 0.05 ) #
+sv.tally <- sub.sv.cnv %>% group_by(tumour) %>% tally()
+
+many.data <- full_join(sv.tally, tmb, by=c('tumour'='tumour')) %>% 
+  full_join(msi, by=c('tumour'='tumour_id')) %>% 
+  full_join(hrd, by=c('tumour'='tumour')) 
+
+length(unique(many.data$tumour))
+
+many.data <- unique(many.data)
+names(many.data)[names(many.data) == 'n'] <- 'sv_count'
+
+nrow(many.data)
+
+many.data$mutator_phenotype <- 'none'
+many.data$mutator_phenotype[many.data$msi_score > 15] <- 'MSI'
+many.data$mutator_phenotype[many.data$Probability > 0.92] <- 'HRD'
+
+write.table(
+  many.data,
+  file = paste0(basedir, "/results/mutation.landscape.txt"),
+  row.names = FALSE, quote = FALSE, sep = "\t"
+)
+
+ggplot(many.data, aes(x=tmb, y=sv_count)) + 
+  stat_ellipse(type = "euclid", level =0.5, geom = "polygon", linetype='dashed', alpha=0.5, color='grey90') +
+  stat_ellipse(type = "euclid", level =0.95,  geom = "polygon", linetype='dotted', alpha=0.5, fill='grey95') +
+  
+  geom_point(aes(color=mutator_phenotype), size=2) +
+  theme_bw(base_size=10)+ 
+  
+  scale_y_log10() + 
+  scale_x_log10() + 
+  scale_color_manual(values = pnw_palette(name="Bay", n=5 )[c(4,3,2, 1)]) +
+
+  labs(x='Tumour Mutational Burden (mutations / mb)', y='Structural Variant Count', color='')+ 
+   theme(
+        panel.grid = element_blank(),
+        panel.background = element_rect(fill='transparent'), #transparent panel bg
+        plot.background = element_rect(fill='transparent', color='transparent'),
+        legend.position = 'bottom', 
+        legend.key.width = unit(1.8, "cm"),
+        panel.border = element_blank())
+
+```

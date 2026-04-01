@@ -1,0 +1,227 @@
+# Do the Consensus Cancer Subtypes show OS differences?
+
+## Start with data setup
+
+```{r}
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(reshape2)
+  library(survival)
+  library(survMisc)
+  library(survminer)
+  library(ggplot2)
+})
+
+
+`%ni%` <- Negate(`%in%`)
+
+basedir = '~/Documents/scripts/github/btc-ccs/'
+secdir = '~/Documents/scripts/github/evolution/'
+
+source( file.path(basedir, "bin/BTC.functions.R"))
+
+predicted.w.score <- fread(file.path(basedir,'/results/all.eCMS.txt'))
+
+timeline.outcome <- fread(file.path(secdir,"/results/timeline.outcome.txt"))
+timeline.outcome$BTCID <- gsub('_','',timeline.outcome$BTC_ID)
+length(unique(timeline.outcome$BTCID))
+
+na_values <- c("No information", "Not available", "Not Done", "Unknown", "Not stated", "Not applicable", "","N/A")
+
+timeline.outcome <- timeline.outcome %>%
+  mutate(across(Overall_Stage_at_Diagnosis, ~replace(., . %in% na_values, NA)))
+
+timeline.outcome$OS_STATUS <- NA
+timeline.outcome$OS_STATUS[timeline.outcome$Status == 'Alive'] <- 0
+timeline.outcome$OS_STATUS[timeline.outcome$Status == 'Expired'] <- 1
+timeline.outcome %>% group_by(OS_STATUS) %>% tally()
+
+## adjust timeline
+timeline.outcome <- timeline.outcome %>% 
+  filter(Specify_other_cause_of_death %ni% c('coagulopathy and MSOF post hepatectomy') & relative_latest_date > 0)
+
+timeline.outcome$last.from.surgery = timeline.outcome$relative_latest_date - timeline.outcome$relative_Date_of_Surgery
+timeline.outcome$last.from.L1 = timeline.outcome$relative_latest_date - timeline.outcome$relative_Date_of_first_infusion_of_first_line_palliative_chemotherapy
+
+##join eCMS
+timeline.outcome <- full_join(timeline.outcome, predicted.w.score)
+
+table(timeline.outcome$rna_class)
+
+```
+
+## Now, survival analysis
+We iteratively add more factors to the OS model
+
+```{r}
+
+palliative.cohort <- timeline.outcome %>% 
+  filter(  last.from.L1 > 0 & # first_palliative_specific %ni% c('Pemigatinib') & second_palliative_specific %ni% c('Pemigatinib','Ivosidenib') &
+             first_palliative %in% c("Chemotherapy + Immunotherapy","Chemotherapy" ,"Other Drug") & !is.na(rna_class)) #
+## two cases have no recurrence here
+
+
+table(palliative.cohort$rna_class)
+
+os.palliative.cms <- survfit(Surv(last.from.L1, OS_STATUS) ~ rna_class , 
+                             data = palliative.cohort )
+
+os.palliative.cms.plot <- 
+  ggsurvplot(os.palliative.cms, data = palliative.cohort, 
+             pval = T, 
+             conf.int = T, 
+             censor = TRUE,
+             risk.table = F,  
+             legend="none", 
+             xlab="Months after starting palliative therapy",
+             palette =  c("#04597C","#EDA71A")
+  ) 
+
+os.palliative.cms.plot.g <- os.palliative.cms.plot$plot
+
+os.palliative.cms.plot.g <- 
+  os.palliative.cms.plot.g + 
+  theme_bw(base_size=10) + guides(color='none',fill='none') +
+  theme(panel.grid = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank()) +
+  scale_x_continuous(breaks = seq(0, max(palliative.cohort$last.from.L1), by = 12))
+
+os.palliative.cms
+
+coxph(Surv(last.from.L1, OS_STATUS) ~ rna_class , 
+      data =  palliative.cohort )
+
+os.palliative.cms.plot.g
+
+ggsave(paste0(basedir, "/results/fig/FIG2B.cms.os.palliative.svg"),
+       plot = os.palliative.cms.plot.g
+    , device = "svg",width = 95, height = 60, units = 'mm' )
+
+
+
+cox.os.cms.loc.palliative <- coxph(Surv(last.from.L1, OS_STATUS) ~ rna_class +  Location, 
+                                   data =  palliative.cohort )
+
+ggforest(cox.os.cms.loc.palliative, data =palliative.cohort)
+
+cox.os.cms.loc.palliative <- coxph(Surv(last.from.L1, OS_STATUS) ~ rna_class +  Overall_Stage_at_Diagnosis, 
+                                   data =  palliative.cohort )
+
+ggforest(cox.os.cms.loc.palliative, data =palliative.cohort)
+
+```
+
+## here's the full model
+
+```{r}
+cox.os.cms.loc.palliative <- coxph(Surv(last.from.L1, OS_STATUS) ~ rna_class +  Overall_Stage_at_Diagnosis + Location, 
+                                   data =  palliative.cohort )
+
+os.palliative.cms.full <- survfit(Surv(last.from.L1, OS_STATUS) ~ rna_class +  Overall_Stage_at_Diagnosis + Location, 
+                                  data = palliative.cohort )
+
+
+cox.os.cms.loc.palliative.summary <-   summary(cox.os.cms.loc.palliative)
+
+full.forest.df <- cbind.data.frame(
+  cox.os.cms.loc.palliative.summary$conf.int,
+  'p'=cox.os.cms.loc.palliative.summary$coefficients[,5]
+) %>% as.data.frame() %>% dplyr::select(`exp(coef)`, `lower .95`, `upper .95`, p)
+
+names(full.forest.df) <- c('HZ','ci.low','ci.hi','p')
+full.forest.df$name <- rownames(full.forest.df)
+
+palliative.n <- palliative.cohort %>% dplyr::select(rna_class, Location, Overall_Stage_at_Diagnosis ) %>% 
+  melt(measure.vars=c('rna_class', 'Location', 'Overall_Stage_at_Diagnosis'))
+palliative.n$name <- paste0(palliative.n$variable, palliative.n$value )
+palliative.n <- palliative.n %>% group_by(name, variable, value)  %>% filter(!is.na(value)) %>% tally()
+
+full.forest.df <- left_join(palliative.n, full.forest.df)
+full.forest.df$HZ[is.na(full.forest.df$HZ)] <- 1
+
+full.forest.df$p <- round(full.forest.df$p,3)
+
+
+full.forest.df <- full.forest.df %>%
+  mutate(p = if_else(!is.na(p) & p < 0.05,
+                     paste0(p, "*"),
+                     as.character(p)))
+
+full.forest.df$p[is.na(full.forest.df$p)] <- '(reference)'
+
+full.forest.df$variable <- as.character(full.forest.df$variable)
+full.forest.df$variable[full.forest.df$variable == 'Overall_Stage_at_Diagnosis'] <- 'Stage'
+full.forest.df$variable[full.forest.df$variable == 'rna_class'] <- 'eCMS'
+full.forest.df$category <- factor(full.forest.df$variable, levels = c('eCMS','Location','Stage'))
+
+full.forest.df$value[full.forest.df$value == 'Distal_CCA_dCCA'] <- 'dCCA'
+full.forest.df$value[full.forest.df$value == 'Gallbladder'] <- 'GBC'
+full.forest.df$value[full.forest.df$value == 'Intrahepatic_CCA_iCCA'] <- 'iCCA'
+full.forest.df$value[full.forest.df$value == 'Perihilar_CCA_pCCA'] <- 'pCCA'
+
+full.forest.df$value.n <- paste0(full.forest.df$value,'\nn=',full.forest.df$n)
+full.forest.df$type <- factor(full.forest.df$value.n, levels = c('GBC\nn=10','dCCA\nn=4','pCCA\nn=7','iCCA\nn=42','HCC-CCA\nn=2',
+                                                                 'IV\nn=28','III\nn=6','I & II\nn=17',
+                                                                 'CMS-B\nn=33','CMS-A\nn=32'))
+
+palliative.eCMS.HZ.plot <- 
+
+  
+       ggplot(full.forest.df, aes(x=-log(HZ), y=type)) +
+         facet_grid(category~., scales='free',space='free',switch='y')+
+         geom_vline(xintercept = 0, color='grey80')+
+         geom_errorbar( aes(xmin =  -log(ci.low), xmax = -log(ci.hi)), width=0) +
+         geom_point(shape=16, aes(color=type))+ 
+         geom_text(aes(label=p), x=min(-log(full.forest.df$ci.hi), na.rm = T), hjust=1.5, size=2.5) +
+         #coord_fixed()+
+         theme_bw(base_size=10) +
+         # scale_color_manual(values = pnw_palette(name="Bay", n=30)[c(3,20)], na.value = 'grey90') +
+         
+         theme(panel.grid = element_blank(), 
+               panel.border = element_blank(),
+               panel.spacing = unit(0.2, "lines"),
+               strip.background = element_blank(),
+               plot.margin = unit(c(0, 0, 0, 0), "mm"),
+               legend.position = 'bottom',
+               
+               panel.background = element_blank(), 
+               plot.background = element_blank() ,
+               axis.ticks.y = element_blank() ,
+               axis.line.x = element_line(color = "grey80"),
+               axis.text.y  = element_text(size = 7, margin = margin(r = unit(55, "mm")))  ,
+               strip.placement = "outside",        # Place strip outside axis
+               strip.text.y.left = element_text(   # Style facet text
+                 angle = 0,                        # Horizontal text
+                 face = "bold",                    # Bold
+                 hjust = 1                         # Align to left of axis labels
+               )
+               
+         ) +scale_color_manual(  values=c(
+           "CMS-B\nn=33"    = "#EDA71A" , 
+           "CMS-A\nn=32" = "#04597C" ,
+           
+           'HCC-CCA\nn=2' = "#b4b4b4ff",
+           'pCCA\nn=7' = "#e59d54ff",
+           'iCCA\nn=42' = "#fbcc7aff",
+           'dCCA\nn=4' = "#ba7a44ff",
+           'GBC\nn=10' = "#855b40ff"
+           
+         ), na.value = 'black') +
+         guides(color='none', size='none')+
+         labs(x='Hazard Ratio',y='')+
+         scale_y_discrete(position = "left")+ 
+         coord_cartesian(clip = "off") 
+       
+       palliative.eCMS.HZ.plot
+       
+       
+ggsave(paste0(basedir, "/results/fig/FIG2F.palliative.eCMS.HZ.svg"),   plot = 
+         palliative.eCMS.HZ.plot
+       ,     device = "svg", width = 100, height = 75,  units = 'mm', dpi=72 )
+
+```

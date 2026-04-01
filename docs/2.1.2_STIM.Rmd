@@ -1,0 +1,189 @@
+# Explore Immune signatures
+
+## NMF Immune signatures
+First, let's look at the correlation between our immune signatures and their relationship with CCS. We'll find the strongest signal is from variance in tumor content in the sample.
+
+```{r}
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(tibble)
+  library(reshape2)
+  library(ggplot2)
+  library(PNWColors)
+  library(ggalluvial)
+})
+
+
+basedir = '~/Documents/scripts/github/btc-ccs/'
+secdir = '~/Documents/scripts/github/evolution/'
+
+H_matrix <- read.csv(file.path(basedir,'/results/H_matrix.txt'), row.names = 1)
+
+H_matrix_ordered_norm <-   data.frame(t(apply(H_matrix, 1, scale)))
+names(H_matrix_ordered_norm) <- names(H_matrix)
+
+H_matrix_ordered_norm.df <- data.table(H_matrix_ordered_norm)
+H_matrix_ordered_norm.df$sig.id <- paste0('sig', row.names(H_matrix_ordered_norm))
+
+H_matrix_ordered_norm.melt <- melt(H_matrix_ordered_norm.df, id.vars='sig.id') 
+
+y_order.convert <- fread(file.path(basedir,'/results/NMF.conversion.txt'))
+
+h.new <- left_join(H_matrix_ordered_norm.melt, y_order.convert, by=c('sig.id'='og')) %>%
+  reshape2::dcast( variable ~ new, value.var = 'value')
+
+cohort.info <- fread(file.path(basedir,'/results/btc.cellularity.curated.txt'), col.names = c('tumour','cellularity','ploidy'))
+
+h.new <- left_join(h.new, cohort.info, by=c('variable'='tumour'))
+h.new$content.bin <-NA
+h.new$content.bin[h.new$cellularity <= 1 ] <- 'High (0.6-1)'
+h.new$content.bin[h.new$cellularity < 0.6 ] <- 'Low (<0.6)'
+
+predicted.w.score <- fread(file.path(basedir,"/results/all.eCMS.txt")) 
+H_t_labs <- left_join(predicted.w.score, h.new,  by=c('sample'='variable'))
+
+immune_nmf.tumour_content.plot <- 
+         ggplot(H_t_labs %>% filter(!is.na(content.bin)) , aes(x=sig.2, y=sig.6, color=rna_class, shape=content.bin)) + 
+  facet_grid(content.bin~.)+
+  geom_vline(xintercept = 0, color='grey80')+
+  geom_hline(yintercept = 0, color='grey80')+
+  
+  geom_point(aes(size=cellularity))  + 
+  coord_fixed() + 
+  theme_bw(base_size=10)+
+   
+  scale_shape_manual(values=c(16,1)) + 
+  #scale_color_manual(values = pnw_palette(name="Sailboat", n=5 ))+
+  theme(
+    plot.margin = unit(c(0, 0, 0, 1), "mm"),
+    panel.spacing = unit(0, "mm"),
+    
+    panel.background = element_blank(),
+    
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    strip.text = element_blank(),
+    legend.key.height = unit(6, "pt"),
+    legend.key.width  = unit(6, "pt"),
+    legend.spacing.x  = unit(4, "pt"),
+    legend.spacing.y  = unit(1, "pt"),
+    legend.box.margin = margin(t = 0, r = 0, b = 0, l = 0)
+  ) +
+  scale_color_manual(  values=c(
+    "CMS-B"    = "#EDA71A" , 
+    "CMS-A" = "#04597C" 
+  ), na.value = 'grey90') +
+    guides(color='none')+
+    scale_size(range = c(0.25, 2.5)) + labs(x='Signature 2', y='Signature 6',shape='Cellularity Bin',size='Cellularity',color='CMS')
+
+immune_nmf.tumour_content.plot
+
+ggsave(paste0(basedir, "/results/fig/fig3f.immune_nmf.tumour_content.svg"),plot =
+  immune_nmf.tumour_content.plot
+, device = "svg", height = 70, width = 70, units = 'mm' )
+
+```
+
+## Stroma-Tumor-Immune classification
+Next, we compare our immune signatures with the Stroma-Tumor-Immune (STIM) classification of [Martin-Serrano et al. 2023](http://dx.doi.org/10.1136/gutjnl-2021-326514). This classifier was trained to predict iCCAs so we subset to this population only. When we noticed the strong segregation specific STIM classes with CCS, we also enquired into whether tumor content might impact inference.
+
+```{r}
+
+labels_df.raw <- fread(file.path(basedir,"/results/classified.FF.txt"))
+stim.class <- labels_df.raw  %>% dplyr::select( Sample | starts_with("martinserrano") ) 
+stim.class[stim.class == 'Hepati Stem-like'] <- 'Hepatic Stem-like'
+  
+stim.prob <- left_join(H_t_labs, stim.class, by=c('sample'='Sample')) %>% filter( !is.na(rna_class))
+
+timeline.outcome <- fread(file.path(secdir,"/results/timeline.outcome.txt"))
+timeline.outcome$BTCID <- gsub('_','',timeline.outcome$BTC_ID)
+iccas <- timeline.outcome$BTCID[timeline.outcome$Location == 'Intrahepatic_CCA_iCCA']
+
+stim.prob$content.bin <-NA
+stim.prob$content.bin[stim.prob$cellularity <= 1 ] <- 'High (>=85%)'
+stim.prob$content.bin[stim.prob$cellularity < 0.85 ] <- 'Mid (65-85%)'
+stim.prob$content.bin[stim.prob$cellularity <= 0.65 ] <- 'Low (<=65%)'
+
+
+transition_df.1 <- stim.prob %>% filter(!is.na(martinserrano.class) &  !is.na(rna_class) & BTCID %in% iccas) %>% group_by(martinserrano.class, rna_class) %>% tally()
+
+colnames(transition_df.1) <- c("STIM", "CMS", "Freq")
+
+transition.max <- transition_df.1 %>% group_by(STIM) %>% filter(Freq == max(Freq) ) 
+
+transition_df.1$STIM.f <- factor(transition_df.1$STIM, 
+                                  levels=transition.max$STIM[order(transition.max$CMS)])
+
+
+ggplot(transition_df.1,
+          aes(axis1 = CMS, axis2 = STIM.f, y = Freq)) +
+   geom_alluvium(width=0.8,  aes(fill=STIM.f)) +
+   geom_stratum(width=0.8, color = "black", aes(fill=STIM.f), alpha=0.2) +
+   geom_text(stat = "stratum", aes(label = after_stat(stratum)), size=1.5) +
+   scale_x_discrete(limits = c("CCS", "STIM"), expand = c(.05, .05)) +
+   scale_fill_manual(  
+     values =  pnw_palette(name="Sailboat", n=5 )
+     , na.value = 'white') +
+   theme_bw(base_size=10) + 
+   guides(fill='none')+
+   labs(fill='STIM', y='Sample Count')+
+   theme(
+     plot.margin = unit(c(0, 0, 0, 0.5), "mm"),
+     panel.spacing = unit(0, "mm"),
+     panel.background = element_blank(),
+     panel.border = element_blank(),
+     plot.background = element_blank(),
+     panel.grid.major = element_blank(),
+     panel.grid.minor = element_blank(),
+     strip.background = element_blank(),
+   )
+
+transition_df <- stim.prob %>% filter(!is.na(martinserrano.class) & !is.na(content.bin) & !is.na(rna_class) & BTCID %in% iccas) %>% group_by(martinserrano.class, rna_class, content.bin) %>% tally()
+
+colnames(transition_df) <- c("STIM", "CMS","Cellularity", "Freq")
+
+transition_df$STIM <- gsub(' ','\n',transition_df$STIM)
+transition_df$STIM.f <- factor(transition_df$STIM, levels=c( 'Hepatic\nStem-like', 'Immune\nClassical', 'Inflammatory\nStroma', 'Desert-like','Tumor\nClassical'))
+transition_df$Cellularity.f <- factor(transition_df$Cellularity, levels=c( 'High (>=85%)', 'Mid (65-85%)', 'Low (<=65%)'))
+
+stim_cms.iCCA.plot <- 
+         ggplot(transition_df,
+                aes(axis1 = CMS, axis2 = STIM.f, y = Freq)) +
+         facet_grid(Cellularity.f ~ . , space='free_y',scale='free_y') +
+         geom_alluvium(width=0.8,  aes(fill=STIM.f)) +
+         geom_stratum(width=0.8, color = "black", aes(fill=STIM.f), alpha=0.2) +
+         geom_text(stat = "stratum", aes(label = after_stat(stratum)), size=1.5) +
+         scale_x_discrete(limits = c("CCS", "STIM"), expand = c(.05, .05)) +
+         scale_fill_manual(  
+           values =  pnw_palette(name="Sailboat", n=5 )
+           , na.value = 'white') +
+         theme_bw(base_size=10) + 
+         guides(fill='none')+
+         labs(fill='STIM', y='Sample Count')+
+         theme(
+           plot.margin = unit(c(0, 0, 0, 0.5), "mm"),
+           panel.spacing = unit(0, "mm"),
+           panel.background = element_blank(),
+           panel.border = element_blank(),
+           plot.background = element_blank(),
+           panel.grid.major = element_blank(),
+           panel.grid.minor = element_blank(),
+           strip.background = element_blank(),
+         )
+
+stim_cms.iCCA.plot
+       
+ggsave(file.path(basedir, "/results/fig/FIG3g.stim_cms.iCCA.svg"),plot =
+         stim_cms.iCCA.plot
+       , device = "svg", width = 37, height = 63, units = 'mm', dpi= 72 )
+
+
+         
+
+```

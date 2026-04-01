@@ -1,0 +1,865 @@
+# Compare mutational profiles between CCS
+Let's compare the mutational profiles between the substypes
+
+## Data Intake
+
+```{r}
+
+suppressPackageStartupMessages({
+
+library(FactoMineR)
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggrepel)
+library(broom) #tidy
+library(logistf) #Firth's bias-reduced logistic regressions
+library(vegan) # shannon index
+library(stringr )
+library(ggupset)
+library(PNWColors)
+library(cowplot)
+library(car)
+})
+
+'%ni%' <- function(x,y)!('%in%'(x,y))
+
+this_theme <- theme(        
+  panel.background = element_rect(fill='transparent'), #transparent panel bg
+  plot.background = element_rect(fill='transparent', color='transparent'), #transparent plot bg
+  panel.grid.major.x = element_blank(), #remove major gridlines
+  panel.grid.minor = element_blank(), #remove minor gridlines
+  legend.background = element_rect(color = NA,fill=NA), #transparent legend bg
+  legend.box.background = element_rect(color = NA,fill=NA), #transparent legend panel
+  
+  axis.text.x =element_blank(),
+  panel.grid = element_blank(),
+  axis.title =element_blank(),
+  axis.ticks.x =element_blank(),
+  legend.title=element_blank(),
+  plot.title = element_blank(),
+  panel.border = element_blank(),
+  legend.spacing = unit(0, 'cm'),)
+
+basedir = '~/Documents/scripts/github/btc-ccs/'
+secdir = '~/Documents/scripts/github/evolution/'
+
+sigprofiler.meta <- fread(file.path(basedir,'/source_data/sigprofiler.meta.txt'))
+
+cohort.summary <- fread(file.path(secdir,'/results/summary.txt'))
+
+full.sv.cnv <- fread(file.path(secdir,'/results/sv.cnv.txt'))
+
+mutation.landscape <- fread( paste0(basedir, "/results/mutation.landscape.txt"))
+
+HYPERMUTATOR <- mutation.landscape$tumour[mutation.landscape$mutator_phenotype %in% c('HRD','MSI')]
+HYPERMUTATOR <- c(c("BTC_0025_Sn_M_526", "BTC_0025_Lv_M_526"), HYPERMUTATOR)
+
+driver.landscape <- fread(file.path(basedir, "/results/driver.landscape.txt"))
+driver.landscape <-  driver.landscape %>% filter(gene %in% c("BAP1",'TP53')) %>% dcast(donor ~ gene)
+
+predicted.w.score <- fread(file.path(basedir, '/results/all.eCMS.txt') )
+cnv.cms <- fread(file.path(basedir,'/results/all.gCMS.txt') )
+
+eCMSA <- unlist(predicted.w.score %>% filter(rna_class == 'CMS-A') %>% dplyr::select(sample))
+eCMSB <- unlist(predicted.w.score %>% filter(rna_class == 'CMS-B') %>% dplyr::select(sample))
+gCMSA <- unlist(cnv.cms %>% filter(gCMS == 'CMS-A') %>% dplyr::select(tumor))
+gCMSB <- unlist(cnv.cms %>% filter(gCMS == 'CMS-B') %>% dplyr::select(tumor))
+
+BAP1_tumours <- driver.landscape$donor[driver.landscape$BAP1 > 0 & driver.landscape$TP53 == 0 ]
+tp53_tumours <- driver.landscape$donor[driver.landscape$BAP1 == 0 & driver.landscape$TP53 > 0 ]
+
+```
+
+## mutation load differences
+Start with simply comparing TMB, accounting for hypermutator cases (MSI + HRD).
+
+```{r}
+
+mutation.landscape$driver[mutation.landscape$tumour %in% BAP1_tumours] <- 'BAP1'
+mutation.landscape$driver[mutation.landscape$tumour %in% tp53_tumours] <- 'TP53'
+
+mutation.landscape$rna_class[mutation.landscape$tumour %in% eCMSA] <- 'eCMS-A'
+mutation.landscape$rna_class[mutation.landscape$tumour %in% eCMSB] <- 'eCMS-B'
+
+mutation.landscape$gCMS[mutation.landscape$tumour %in% gCMSA] <- 'gCMS-A'
+mutation.landscape$gCMS[mutation.landscape$tumour %in% gCMSB] <- 'gCMS-B'
+
+mutation.landscape %>% filter(!is.na(rna_class)) %>% group_by( mutator_phenotype, rna_class, gCMS) %>% tally()
+tmb <- mutation.landscape %>% dplyr::select(tumour, driver, mutator_phenotype, rna_class, tmb, indel_count, snv_count, sv_count)
+
+tmb$is.mutator <- F
+tmb$is.mutator[tmb$tumour %ni% HYPERMUTATOR ] <- T
+
+tmb.plot <- 
+ggplot(
+  tmb %>% filter(!is.na(rna_class) & is.mutator),
+  aes(x = rna_class, y=log(tmb), color=rna_class)
+) +
+
+  # Neatly packed points, dodged by rna_class within each sig
+  ggbeeswarm::geom_quasirandom(
+    aes(group = rna_class),
+    width = 0.2
+  ) +
+  
+  # Boxplots per (sig x rna_class) group so they dodge correctly
+  geom_boxplot(
+    aes(
+      
+      group = interaction(rna_class)
+    ),
+    width = 0.45,
+    alpha = 0.5,
+    outlier.shape = NA,   # hide outliers since points are shown
+  ) +
+  
+  # Color/fill for the two classes
+  scale_color_manual(values = c('eCMS-A' = "#04597C", 'eCMS-B' = "#EDA71A"), na.value = 'grey85') +
+  scale_fill_manual(values  = c('eCMS-A' = "#04597C", 'eCMS-B' = "#EDA71A"), na.value = 'grey85') +
+  
+  theme_bw(base_size=10) +
+  theme(
+    plot.margin = unit(c(0, 0, 0, 0), "mm"),
+    
+    panel.grid        = element_blank(),
+    plot.background = element_blank(),
+    panel.background = element_blank(),
+    strip.background  = element_blank(),
+    legend.position   = "top",
+    # axis.text.x       = element_text(angle = 30, hjust = 1)
+  ) +
+  guides(color='none')+
+  scale_x_discrete(limits = c("eCMS-B", "eCMS-A"),labels=c("B",'A')) +
+  labs(x = 'CCS', y = "Tumor Mutation Burdern (log)", color = NULL, fill = NULL)
+
+tmb.plot
+
+ggsave(file.path(basedir, "/results/fig/FIG5A.tmb.svg"),plot =
+    tmb.plot     
+   , device = "svg", width = 25, height = 60, units = 'mm', dpi= 72 )
+
+wilcox.test(tmb$tmb[tmb$tumour %in% eCMSA  ],
+            tmb$tmb[tmb$tumour %in% eCMSB  ])
+
+median(tmb$tmb[tmb$tumour %in% eCMSB ]) / median(tmb$tmb[tmb$tumour %in% eCMSA  ])
+
+
+wilcox.test(tmb$tmb[tmb$tumour %in% eCMSA & tmb$tumour %ni% HYPERMUTATOR ],
+       tmb$tmb[tmb$tumour %in% eCMSB & tmb$tumour %ni% HYPERMUTATOR ])
+
+median(tmb$tmb[tmb$tumour %in% eCMSB & tmb$tumour %ni% HYPERMUTATOR ]) / median(tmb$tmb[tmb$tumour %in% eCMSA & tmb$tumour %ni% HYPERMUTATOR ])
+
+
+wilcox.test(tmb$snv_count[tmb$tumour %in% eCMSA & tmb$tumour %ni% HYPERMUTATOR ],
+            tmb$snv_count[tmb$tumour %in% eCMSB & tmb$tumour %ni% HYPERMUTATOR ])
+
+median(tmb$snv_count[tmb$tumour %in% eCMSB & tmb$tumour %ni% HYPERMUTATOR ]) / median(tmb$snv_count[tmb$tumour %in% eCMSA & tmb$tumour %ni% HYPERMUTATOR ])
+
+wilcox.test(tmb$indel_count[tmb$tumour %in% eCMSA & tmb$tumour %ni% HYPERMUTATOR ],
+            tmb$indel_count[tmb$tumour %in% eCMSB & tmb$tumour %ni% HYPERMUTATOR ])
+
+median(tmb$indel_count[tmb$tumour %in% eCMSB & tmb$tumour %ni% HYPERMUTATOR ]) / median(tmb$indel_count[tmb$tumour %in% eCMSA & tmb$tumour %ni% HYPERMUTATOR ])
+
+```
+
+## HRD and MSI
+Compare the rates of HRD and MSI in the CCS
+
+```{r}
+
+mutator.groups <- tmb %>%
+  dplyr::filter(!is.na(rna_class)) %>%
+  dplyr::count(rna_class, mutator_phenotype) %>%
+  complete(rna_class, mutator_phenotype, fill = list(n = 0)) %>%
+  group_by(rna_class) %>%
+  mutate(total = sum(n),
+         relative_freq = n / total) %>%
+  rowwise() %>%
+  mutate(ci = list(binom.test(n, total)$conf.int)) %>%
+  unnest_wider(ci, names_sep = "_") %>%
+  ungroup() %>%
+  filter(mutator_phenotype != 'none')
+
+
+this.phenotype = 'HRD'
+these.counts <- mutator.groups %>% filter(mutator_phenotype == this.phenotype)
+this.res <- these.counts[,c(3:4)] %>% fisher.test(conf.int = T)
+
+hrd.fish <- cbind.data.frame(
+'mut'=  this.phenotype,
+'p'=this.res$p.value,
+'ci_low'=this.res$conf.int[1],
+'ci_hi'=this.res$conf.int[2]
+)
+
+this.phenotype = 'MSI'
+these.counts <- mutator.groups %>% filter(mutator_phenotype == this.phenotype)
+this.res <- these.counts[,c(3:4)] %>% fisher.test(conf.int = T)
+
+mut.fish<- rbind.data.frame(
+  hrd.fish,
+  cbind.data.frame(
+    'mut'=  this.phenotype,
+    'p'=this.res$p.value,
+    'ci_low'=this.res$conf.int[1],
+    'ci_hi'=this.res$conf.int[2]
+  )
+)
+
+mutator.tally.plot <- 
+      ggplot(mutator.groups , aes(x=rna_class, y=relative_freq*100, fill=rna_class)) + 
+          facet_grid(.~mutator_phenotype, space='free',scales='free')+
+         
+        geom_errorbar(aes(ymin = ci_1*100, 
+                          ymax = ci_2*100), width = 0, color='black') +
+        
+          geom_point(aes(color=rna_class),stat='identity', position = position_dodge()) +
+        
+          theme_bw(base_size=10)+
+          scale_color_manual(values = c('eCMS-A'="#04597C",'eCMS-B'= "#EDA71A"), na.value = 'grey90') +
+          scale_x_discrete(limits = c("eCMS-B", "eCMS-A"),labels=c("B",'A')) +
+         
+          theme(panel.grid = element_blank(), 
+               legend.position = 'bottom',
+               panel.background = element_blank(),
+               plot.background = element_blank(),
+               plot.margin = unit(c(0, 0, 0, 0), "mm"),
+               
+               strip.background = element_blank()
+
+            )+
+          labs(y='% of samples', fill='',x='CMS') +
+
+
+          guides(color = 'none',fill='none')  
+       
+mutator.tally.plot
+
+ggsave(file.path(basedir, "/results/fig/FIGS4g.mutator.tally.svg"),plot =
+       mutator.tally.plot  
+       
+       , device = "svg", width = 35, height = 60, units = 'mm', dpi=72 )
+
+```
+
+## variance model
+Here we compare variance in TMB explained by CCS vs primary tumor anatomical location
+
+```{r}
+
+timeline.outcome <- fread(file.path(secdir,"/results/timeline.outcome.txt"))
+timeline.outcome$BTCID <- gsub('_','',timeline.outcome$BTC_ID)
+length(unique(timeline.outcome$BTCID))
+
+split_cols <-  data.frame(str_split_fixed(mutation.landscape$tumour, "_", 3))
+mutation.landscape$BTCID <- paste(split_cols$X1, split_cols$X2, sep="")
+
+mutation.landscape <- full_join(mutation.landscape, timeline.outcome, by=c('BTCID'='BTCID'))
+
+aggregate(log(tmb) ~ Location, data = mutation.landscape, FUN = function(x) c(n = length(x), mean = mean(x), sd = sd(x)))
+
+fit <- aov(log(tmb) ~ Location, data = mutation.landscape  %>% filter(!is.na(Location) & Location != 'CCA NOS' & Location != 'HCC-CCA') )
+summary(fit)
+
+mutation.landscape$broad_loc[mutation.landscape$Location %in% c("Intrahepatic_CCA_iCCA","HCC-CCA")] <- 'iCCA'
+mutation.landscape$broad_loc[mutation.landscape$Location %in% c("Perihilar_CCA_pCCA","Distal_CCA_dCCA","Gallbladder")] <- 'eCCA'
+mutation.landscape$broad_loc[mutation.landscape$Location %in% c("CCA NOS")] <- 'eCCA'
+
+fit <- aov(log(tmb) ~ broad_loc, data = mutation.landscape  %>% filter(!is.na(Location) ) )
+summary(fit)
+
+ggplot(
+  mutation.landscape %>% filter(!is.na(Location) & mutator_phenotype == 'none'),
+  aes(x = broad_loc, y=log(tmb), color=Location)
+) +
+  
+  ggbeeswarm::geom_quasirandom(
+    aes(group = broad_loc),
+    width = 0.2
+  ) +
+  
+  geom_boxplot(
+    aes(
+      
+      group = interaction(broad_loc)
+    ),
+    width = 0.45,
+    alpha = 0.5,
+    outlier.shape = NA,   # hide outliers since points are shown
+  ) +
+  
+  scale_color_manual(  values=c(
+
+    'HCC-CCA' = "#b4b4b4ff",
+    'Perihilar_CCA_pCCA' = "#e59d54ff",
+    'Intrahepatic_CCA_iCCA' = "#fbcc7aff",
+    'Distal_CCA_dCCA' = "#ba7a44ff",
+    'Gallbladder' = "#855b40ff"
+    
+  ), na.value = 'grey80') +  
+  theme_bw(base_size=10) +
+  theme(
+    plot.margin = unit(c(0, 0, 0, 0), "mm"),
+    
+    panel.grid        = element_blank(),
+    plot.background = element_blank(),
+    panel.background = element_blank(),
+    strip.background  = element_blank(),
+    legend.position   = "top",
+    # axis.text.x       = element_text(angle = 30, hjust = 1)
+  ) +
+  guides(color='none')+
+#  scale_x_discrete(limits = c("eCMS-B", "eCMS-A"),labels=c("B",'A')) +
+  labs(x = '', y = "Tumor Mutation Burdern (log)", color = NULL, fill = NULL)
+
+wilcox.test(log(mutation.landscape$tmb[mutation.landscape$broad_loc == 'eCCA' & mutation.landscape$mutator_phenotype == 'none']),
+            log(mutation.landscape$tmb[mutation.landscape$broad_loc == 'iCCA' & mutation.landscape$mutator_phenotype == 'none']))
+
+t.test(log(mutation.landscape$tmb[mutation.landscape$broad_loc == 'eCCA']),
+            log(mutation.landscape$tmb[mutation.landscape$broad_loc == 'iCCA']))
+
+mutation.landscape$tmb.log <- log(mutation.landscape$tmb)
+
+
+
+vars <- c("tmb.log", "Location", "rna_class")
+d <- na.omit(mutation.landscape[ , ..vars])
+
+m1 <- lm(tmb.log ~ Location, data = d)
+m2 <- lm(tmb.log ~ rna_class, data = d)
+
+summ <- function(m) c(
+  adj_R2 = summary(m)$adj.r.squared,
+  AIC    = AIC(m),
+  BIC    = BIC(m)
+)
+rbind(Location = summ(m1), rna_class = summ(m2))
+
+full <- lm(tmb.log ~ Location + rna_class, data = d)
+
+Anova(full, type = 2)
+
+```
+
+## ecDNA
+Compare frequency of extrachromosomal DNA
+
+```{r}
+
+ecdna.genes <- fread(file.path(basedir,'/results/ecdna.genes.txt'))
+ecdna.n <- ecdna.genes %>% dplyr::select(tumour_id, this.amplicon.id) %>% 
+                        unique() %>% group_by(tumour_id) %>% tally()
+
+#TODO: ensure sample was run
+ecdna.n.split <- left_join(mutation.landscape, ecdna.n, by=c('tumour'='tumour_id'))
+ecdna.n.split$n[is.na(ecdna.n.split$n)] <- 0
+
+ecdna.n.split$n.bin[ecdna.n.split$n == 0] <- 'No ecDNA'
+ecdna.n.split$n.bin[ecdna.n.split$n > 0] <- 'ecDNA+'
+
+ecdna.n.split %>% group_by(rna_class) %>% summarise(mean.n = mean(n))
+
+ecdna.groups <- ecdna.n.split %>%
+  filter(!is.na(rna_class)) %>%
+  dplyr::count(rna_class, n.bin) %>%
+  complete(rna_class, n.bin, fill = list(n = 0)) %>%
+  group_by(rna_class) %>%
+  mutate(total = sum(n),
+         relative_freq = n / total) %>%
+  rowwise() %>%
+  mutate(ci = list(binom.test(n, total)$conf.int)) %>%
+  unnest_wider(ci, names_sep = "_") %>%
+  ungroup() %>%
+  filter(n.bin != 'No ecDNA')
+
+ecdna.n.split %>%
+  filter(!is.na(rna_class)) %>%
+  dplyr::select(rna_class  ,  n.bin) %>%
+  table() %>% fisher.test()
+
+ecDNA.prop.plot <- 
+         ggplot(ecdna.groups , aes(x=rna_class, y=relative_freq * 100, fill=rna_class)) + 
+         facet_grid(.~'ecDNA', space='free',scales='free')+
+         
+         geom_errorbar(aes(ymin = ci_1* 100, 
+                           ymax = ci_2* 100), width = 0, color='black') +
+         
+         geom_point(aes(color=rna_class),stat='identity', position = position_dodge()) +
+         
+         theme_bw(base_size=10)+
+         scale_color_manual(values = c('eCMS-A'="#04597C",'eCMS-B'= "#EDA71A"), na.value = 'grey90') +
+         scale_x_discrete(limits = c("eCMS-B", "eCMS-A"),labels=c("B",'A')) +
+         
+         theme(panel.grid = element_blank(), 
+               legend.position = 'bottom',
+               plot.margin = unit(c(0, 0, 0, 0), "mm"),
+               
+               panel.background = element_blank(),
+               plot.background = element_blank(),
+               strip.background = element_blank(),
+               #   axis.title.x = element_blank()
+         )+
+         labs(y='% of samples', fill='',x='CMS') +
+         
+         guides(color = 'none',fill='none')  
+       
+ecDNA.prop.plot  
+
+ggsave(file.path(basedir, "/results/fig/FIGS4e.ecDNA.prop.svg"),plot =
+         ecDNA.prop.plot
+       , device = "svg", width = 20, height = 60, units = 'mm', dpi=72 )
+
+```
+
+## Mutational Signatures
+
+```{r}
+
+sbs.sigs <- fread(file.path(basedir,'/results/SBS.sig.txt'))
+ncol(sbs.sigs) - 1
+dbs.sigs <- fread(file.path(basedir,'/results/DBS.sig.txt'))
+ncol(dbs.sigs) - 1
+id.sigs <- fread(file.path(basedir,'/results/indel.sig.txt'))
+ncol(id.sigs) - 1
+
+all.sigs <- full_join(sbs.sigs, dbs.sigs, by=c('Samples'='Samples')) %>% full_join(id.sigs, by=c('Samples'='Samples'))
+
+
+all.sigs <- all.sigs %>% filter(Samples %ni% HYPERMUTATOR)
+all.sigs.frac.raw <- as.data.frame(t(apply(all.sigs[,-1], 1, function(x) x / sum(x))))
+
+all.sigs.frac <- cbind.data.frame('Samples'=all.sigs$Samples, all.sigs.frac.raw)
+all.sigs.frac.melt <- all.sigs.frac %>% reshape2::melt(id.vars='Samples')
+
+common.sigs <- all.sigs.frac.melt %>% group_by(variable) %>% summarise(mean_perc = mean(value)) 
+rare.sigs <- all.sigs.frac.melt %>% filter(value > 0) %>% group_by(variable) %>% tally %>% arrange(desc(n))
+
+sig.distance <- as.matrix(dist(all.sigs.frac.raw))
+rownames(sig.distance) = colnames(sig.distance) = all.sigs$Samples
+
+cluster.sigs = F
+if(cluster.sigs){
+  sig.pvclust.result <- pvclust(sig.distance, method.hclust = 'complete' ) 
+  plot(sig.pvclust.result )
+  all.sigs.frac.melt$donor <- factor(all.sigs.frac.melt$Samples, levels = sig.pvclust.result$hclust$labels[sig.pvclust.result$hclust$order])
+  
+}
+
+
+all.sigs.frac.melt <- left_join(all.sigs.frac.melt, predicted.w.score, by=c('Samples'='sample'))
+
+
+all.sigs.frac.melt <- left_join(all.sigs.frac.melt, sigprofiler.meta, by=c('variable'='sig'))
+all.sigs.frac.melt$sig <- factor(all.sigs.frac.melt$variable, levels = common.sigs$variable[order(common.sigs$mean_perc)])
+all.sigs.frac.melt$Samples.f <- factor(all.sigs.frac.melt$Samples, levels = predicted.w.score$sample[order(predicted.w.score$confidence.polarized)])
+
+all.sigs.frac.melt$aetiology_short[all.sigs.frac.melt$aetiology_short %in% c('','Unknown')] <- NA
+
+sig_oncoplot <- 
+          plot_grid(
+            
+            ggplot(all.sigs.frac.melt %>% filter(value > 0 & sig %in% rare.sigs$variable[rare.sigs$n >1] & !is.na(Samples.f)), aes(x=Samples.f, y='eCMS', fill=rna_class)) +
+              geom_tile() + theme_minimal(base_size=10) + 
+              
+              scale_fill_manual(values = c('CMS-A'="#04597C",'CMS-B'= "#EDA71A"), na.value = 'grey') +
+              guides(fill='none',size='none') +
+              theme(panel.grid = element_blank(), 
+                    plot.background = element_blank(), 
+                    panel.background = element_blank(),
+                    axis.text.x = element_blank(), 
+                    axis.title = element_blank()) 
+            
+            ,NULL,
+            
+            ggplot(all.sigs.frac.melt %>% filter(value > 0 & sig %in% rare.sigs$variable[rare.sigs$n >1] & !is.na(Samples.f)), aes(x=Samples.f, y=sig, size=value*100)) +
+              geom_point(aes(color=aetiology_short)) + theme_minimal(base_size=10) + 
+              scale_size(range = c(0.5,2))  +
+              scale_color_manual(values =  pnw_palette(name="Spring", n=length(unique(all.sigs.frac.melt$aetiology_short))), 
+                                 na.value = 'lightgrey') +
+              theme(panel.grid = element_blank(), 
+                    axis.text.y = element_text(size = 6),
+                    plot.background = element_blank(), 
+                    axis.title = element_blank(),
+                    panel.background = element_blank(),axis.text.x = element_blank())+
+              labs(size='% of SSMs',color='Etiology')
+            
+            ,rel_heights = c(0.1,-0.02,0.9 ), ncol = 1,align = 'vh', axis = "rlbt")
+     
+sig_oncoplot   
+     
+ggsave( file.path(basedir, "/results/fig/FIGS5.sig_oncoplot.svg"), plot =
+          sig_oncoplot
+        , device = "svg",width = 210, height = 90, units='mm', dpi=72 )
+
+```
+
+## enrichment analysis
+Find significant biases in appeared of mutational signatures in each subtype, based on methods from [Diaz-Gay 2025](https://doi.org/10.1038/s41586-025-09025-8). A signature has to be in greater than 30% of samples to be considered for bias.
+
+```{r}
+
+enrich.sigs <- all.sigs %>% filter(Samples %ni% HYPERMUTATOR & Samples %in% c(eCMSA, eCMSB))
+
+threshold <- 0.3
+appearance.sigs <- 
+  enrich.sigs %>%
+  select_if(~ mean(. == 0) > threshold)
+appearance.sigs[appearance.sigs > 0] <- 1
+
+appearance.sigs <- appearance.sigs %>%
+  select_if(~ sum(.) != 0)
+
+load.sigs <- 
+  enrich.sigs %>%
+  select_if(~ mean(. == 0) < threshold)
+
+
+load.sigs.transformed <- load.sigs[,-1] %>%
+  mutate(across(everything(), ~ ifelse(. < median(.), 0, 1)))
+
+load.sigs.transformed <- load.sigs.transformed %>%
+  select_if(~ !all(. == 1))
+
+
+enrich.binarized <- cbind.data.frame('Samples'=enrich.sigs$Samples, appearance.sigs, load.sigs.transformed)
+
+write.table(
+  enrich.binarized,
+  file = file.path(basedir, "/results/sig.enrich.binarized.txt"),
+  row.names = FALSE, quote = FALSE, sep = "\t"
+)
+
+enrich.binarized <- fread(file.path(basedir, "/results/sig.enrich.binarized.txt"))
+
+enrich.binarized$rna_class <- NA
+enrich.binarized$rna_class[enrich.binarized$Samples %in% eCMSA] <- 0
+enrich.binarized$rna_class[enrich.binarized$Samples %in% eCMSB] <- 1
+
+enrich.binarized.classed <- enrich.binarized %>% filter(!is.na(rna_class))
+enrich.binarized.classed.melt <- enrich.binarized.classed %>% reshape2::melt(id.vars=c('Samples', 'rna_class'))
+
+refit.sbs.models = T
+if(refit.sbs.models){
+  formula <- as.formula(paste("sig ~ rna_class"))
+  
+  first.model = T
+  for (this.sig in unique(enrich.binarized.classed.melt$variable)) {
+    
+    enrich.binarized.classed.tmp <- enrich.binarized.classed %>% dplyr::select(all_of(c(this.sig,'rna_class')))  
+    names(enrich.binarized.classed.tmp)[1] <- 'sig'
+    
+    driver.tally <- enrich.binarized.classed.tmp %>%
+      group_by(rna_class) %>%
+      summarise(non_zero_count = sum(sig != 0)) %>%
+      filter(non_zero_count > 1)
+    
+    if(nrow(driver.tally) > 1){
+      model <- glm(formula, data = enrich.binarized.classed.tmp, family = binomial)
+      
+      tidy_model <- tidy(model, exponentiate = TRUE, conf.int = TRUE)
+      tidy_model <- tidy_model[tidy_model$term == 'rna_class',]
+      #tidy_model$term <- this.sig
+      
+      model.data <- cbind.data.frame(
+        'sig'=this.sig,
+        'coefficients'=log(tidy_model$estimate),
+        'ci.lower'=tidy_model$conf.low,
+        'ci.upper'=tidy_model$conf.high,
+        'p'=tidy_model$p.value,
+        'model'='classic'
+      )
+      
+      if(first.model){enrich.models <- model.data; first.model=F}else{
+        enrich.models <- rbind.data.frame(enrich.models, model.data)
+      }
+    } else {
+      firths.model <- logistf(formula, data = enrich.binarized.classed.tmp, family = binomial)
+      firths.model.summary <- summary(firths.model)
+      
+      model.data <- cbind.data.frame(
+        'sig'=this.sig,
+        'coefficients'=firths.model.summary$coefficients[2],
+        'ci.lower'=firths.model.summary$ci.lower[2],
+        'ci.upper'=firths.model.summary$ci.upper[2],
+        'p'=firths.model.summary$prob[2],
+        'model'='firth'
+      )
+      
+      if(first.model){enrich.models <- model.data; first.model=F}else{
+        enrich.models <- rbind.data.frame(enrich.models, model.data)
+      }
+    }
+    
+    
+  }
+  
+  write.table(
+    enrich.models,
+    file = paste0(basedir, "/results/sig.bias_models.txt"),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+}
+
+enrich.models <- fread(paste0(basedir, "/results/sig.bias_models.txt"))
+
+
+enrich.models$significant <- 'F'
+enrich.models$significant[enrich.models$p < (0.05)] <- 'T'
+enrich.models$significant[enrich.models$p < (0.05/nrow(enrich.models))] <- 'FDR'
+
+enrich.models$mut_type <- NA
+enrich.models$mut_type[enrich.models$sig %in% names(sbs.sigs)] <- 'SBS'
+enrich.models$mut_type[enrich.models$sig %in% names(dbs.sigs)] <- 'DBS'
+enrich.models$mut_type[enrich.models$sig %in% names(id.sigs)] <- 'ID'
+enrich.models %>% group_by(mut_type) %>% tally()
+enrich.models %>% group_by(mut_type, significant) %>% tally()
+
+enrich.models <- left_join(enrich.models, sigprofiler.meta, by=c('sig'='sig'))
+
+enrich.models.sub <- enrich.models %>% filter(mut_type != "DBS")
+enrich.models.sub$sig <- gsub('SBS','',enrich.models.sub$sig)
+enrich.models.sub$sig <- gsub('ID','',enrich.models.sub$sig)
+enrich.models.sub$sig <- gsub('DBS','',enrich.models.sub$sig)
+
+
+sig.enrichment.dot.plot <-
+   ggplot(enrich.models.sub , aes(x=-coefficients, y=-log(p))) + 
+         geom_vline(xintercept = 0, color='grey') + 
+         #  geom_hline(yintercept = -log(0.05), color='grey50',linetype='dashed') +
+         geom_hline(yintercept = -log((0.05/nrow(enrich.models.sub))), color='grey80',linetype='dotted') +
+         
+         geom_point(size=5, color='grey80', aes(shape=mut_type)) + 
+         # geom_point(data = ~ subset(., p < (0.05/nrow(enrich.models))), aes(color=aetiology_short), size=3) + 
+         geom_point(data = ~ subset(., p < 0.05/nrow(enrich.models.sub) ), aes(color=aetiology_short, shape=mut_type), size=5) +
+         
+         geom_text(data = ~ subset(., p < 0.05/nrow(enrich.models.sub) ),
+                   aes(label = sig)
+         )+
+         
+         theme_bw(base_size=10) +
+         scale_color_manual(values =  pnw_palette(name="Spring", n=length(unique(enrich.models.sub$aetiology_short[enrich.models.sub$p < 0.05/nrow(enrich.models.sub) ]))), 
+                            na.value = 'lightgrey') +
+         scale_shape_manual(values = c(1,16)) +
+         # guides(color='none',fill='none',shape='none')+
+         theme(panel.grid = element_blank(), 
+               plot.margin = unit(c(0, 0, 0, 0), "mm"),
+               legend.position = 'top', 
+               panel.background = element_blank(), 
+               plot.background = element_blank()) + 
+         
+         labs(x='Log Odds Ratio', y='p-value (-log10)', color='',shape='') +   xlim(-max(abs(enrich.models.sub$coefficients)),max(abs(enrich.models.sub$coefficients)))
+       
+sig.enrichment.dot.plot       
+
+ggsave(file.path(basedir, "/results/fig/FIG5b.sig.enrichment.dot.svg"),plot =
+         sig.enrichment.dot.plot
+       , device = "svg", width = 55, height = 70, units = 'mm' , dpi= 72)
+
+
+
+```
+
+## PCA of mutational signatures
+Having found signatures that show a bias between the subtypes, we ask whether these differences are (1) important and (2) more important than anatomical location. To find out, we turn to a principal component analysis.
+
+```{r}
+
+allOfit_pca <- PCA(all.sigs.frac.raw, graph = F)
+
+allOfit_pca_labs <- cbind.data.frame(sample_id=all.sigs$Samples,
+                                     
+                                     allOfit_pca$ind$coord
+)
+
+
+allOfit_pca_contribs<- cbind.data.frame(
+  "sigs"=names(all.sigs[,-1]),
+  allOfit_pca$var$coord)
+
+clinic.sample.info <- fread(file.path(basedir,"/results/clinic.sample.info.txt"))
+tissue_before_chemo <- clinic.sample.info %>% dplyr::select(BTC_ID, tissue_before_chemo)
+
+split_cols <-  data.frame(str_split_fixed(allOfit_pca_labs$sample_id, "_", 3))
+allOfit_pca_labs$BTC_ID <- paste(split_cols$X1, split_cols$X2, sep="_")
+
+allOfit_pca_labs <- full_join(allOfit_pca_labs, tissue_before_chemo, by=c('BTC_ID'='BTC_ID'))
+allOfit_pca_labs$tissue_before_chemo[allOfit_pca_labs$tissue_before_chemo == 'TRUE'] <- 'treatment naive'
+allOfit_pca_labs$tissue_before_chemo[allOfit_pca_labs$tissue_before_chemo == 'FALSE'] <- 'post-treatment'
+
+allOfit_pca$eig[1:2,]
+
+wilcox.test(allOfit_pca_labs %>% filter(tissue_before_chemo == 'treatment naive' & !is.na(Dim.1)) %>% dplyr::select(Dim.1)  %>% unlist(),
+            allOfit_pca_labs %>% filter(tissue_before_chemo == 'post-treatment' & !is.na(Dim.1)) %>% dplyr::select(Dim.1) %>% unlist()  )
+
+allOfit_pca_labs$class[allOfit_pca_labs$sample_id %in% eCMSA] <- 'eCMS-A'
+allOfit_pca_labs$class[allOfit_pca_labs$sample_id %in% eCMSB] <- 'eCMS-B'
+
+wilcox.test(allOfit_pca_labs %>% filter(class == 'eCMS-B' & !is.na(Dim.2)) %>% dplyr::select(Dim.2)  %>% unlist(),
+            allOfit_pca_labs %>% filter(class == 'eCMS-A' & !is.na(Dim.2)) %>% dplyr::select(Dim.2) %>% unlist()  )
+
+SIGPCA.plot <- 
+         plot_grid(
+           
+           
+           ggplot(allOfit_pca_labs %>% filter(!is.na(class)),aes(x=Dim.2)) + 
+             geom_histogram(position=position_dodge(), aes(y=..density.., fill=class)) +
+             #geom_density(aes(color=class)) +
+             
+             scale_color_manual(values = c('treatment naive'='lightgrey',
+                                           'post-treatment'='cornflowerblue',
+                                           'eCMS-A'= pnw_palette(name="Bay", n=30)[c(3)],
+                                           'eCMS-B'=pnw_palette(name="Bay", n=30)[c(20)]), 
+                                na.value = 'white') +
+             scale_fill_manual(values = c('treatment naive'='lightgrey',
+                                          'post-treatment'='cornflowerblue',
+                                          'eCMS-A'= pnw_palette(name="Bay", n=30)[c(3)],
+                                          'eCMS-B'=pnw_palette(name="Bay", n=30)[c(20)]), 
+                               na.value = 'white') +
+             theme_minimal(base_size=10) + 
+             guides(color='none',fill='none')+
+             theme(
+               panel.grid = element_blank(),
+               axis.title= element_blank(),
+               axis.text= element_blank(),
+               plot.background = element_blank(),
+               panel.background = element_blank())+ 
+             xlim(min(allOfit_pca_labs$Dim.2, na.rm=T)-0.1, max(allOfit_pca_labs$Dim.2, na.rm=T)+0.1 )
+           
+           ,NULL,NULL,
+           NULL,NULL,NULL,
+           
+           ggplot(data=allOfit_pca_labs %>% filter(!is.na(class)),aes(y=Dim.1,x=Dim.2, color=class)) +
+             
+             # stat_ellipse( data = ~ subset(., !is.na(class)), level=0.75, alpha=0.5, linetype='dashed') +
+             
+             geom_point(size=1.2,   shape=1, aes(color=class), stroke = 0.8) + 
+             geom_point(size=0.5, shape=16, aes(color=tissue_before_chemo)) + 
+             
+             
+             scale_shape_manual(values = c(3,4)) +
+             
+             labs(
+               y= "Mutational Signature PC1",
+               x= "Mutational Signature PC2",
+               
+               color="Subtype") +
+             guides(color='none',fill='none',shape='none')+
+             theme_bw(base_size=10) +
+             
+             scale_color_manual(values = c('treatment naive'='lightgrey',
+                                           'post-treatment'='cornflowerblue',
+                                           'eCMS-A'= pnw_palette(name="Bay", n=30)[c(3)],
+                                           'eCMS-B'=pnw_palette(name="Bay", n=30)[c(20)]), 
+                                na.value = 'white') +
+             scale_fill_manual(values = c('treatment naive'='lightgrey',
+                                          'post-treatment'='cornflowerblue',
+                                          'eCMS-A'= pnw_palette(name="Bay", n=30)[c(3)],
+                                          'eCMS-B'=pnw_palette(name="Bay", n=30)[c(20)]), 
+                               na.value = 'white') +
+             theme(plot.background = element_blank(),
+                   panel.grid = element_blank(),
+                   panel.background = element_blank())  + 
+             xlim(min(allOfit_pca_labs$Dim.2, na.rm=T)-0.1, max(allOfit_pca_labs$Dim.2, na.rm=T)+0.1 )+
+             ylim(min(allOfit_pca_labs$Dim.1, na.rm=T)-0.3, max(allOfit_pca_labs$Dim.1, na.rm=T)+0.1 )
+           
+           ,
+           NULL,
+           ggplot(allOfit_pca_labs %>% filter(!is.na(tissue_before_chemo)),aes(y=Dim.1)) + 
+             #geom_density(aes(color=tissue_before_chemo), linewidth = 0.2) +
+             geom_histogram(position=position_dodge(), aes(x=..density.., fill=tissue_before_chemo)) +
+             
+             scale_color_manual(values = c('treatment naive'='lightgrey',
+                                           'post-treatment'='cornflowerblue',
+                                           'eCMS-A'= pnw_palette(name="Bay", n=30)[c(3)],
+                                           'eCMS-B'=pnw_palette(name="Bay", n=30)[c(20)]), 
+                                na.value = 'white') +
+             scale_fill_manual(values = c('treatment naive'='lightgrey',
+                                          'post-treatment'='cornflowerblue',
+                                          'eCMS-A'= pnw_palette(name="Bay", n=30)[c(3)],
+                                          'eCMS-B'=pnw_palette(name="Bay", n=30)[c(20)]), 
+                               na.value = 'white') +
+             
+             theme_minimal(base_size=10)+
+             labs(fill='Platinum\nChemotherapy')+
+             theme(plot.background = element_blank(),
+                   # legend.position = 'top',
+                   panel.grid = element_blank(),
+                   
+                   axis.title= element_blank(),
+                   axis.text= element_blank(),
+                   panel.background = element_blank()) + 
+             
+             ylim(min(allOfit_pca_labs$Dim.1, na.rm=T) -0.3, max(allOfit_pca_labs$Dim.1, na.rm=T)+0.1 ) +
+             guides(color='none', fill='none')
+           
+           ,   rel_heights = c(0.35,-0.16,0.65), rel_widths = c(0.65,-0.18,0.35),ncol = 3, align = 'hv', axis = "rlbt")
+       
+SIGPCA.plot 
+
+ggsave(file.path(basedir,"/results/fig/FIG5c.SIGPCA.svg"),plot =
+         SIGPCA.plot
+       , device = "svg", height = 58,width = 65 , units='mm')
+
+
+
+allOfit_pca_labs <- full_join(allOfit_pca_labs, timeline.outcome, by=c('BTC_ID'='BTC_ID'))
+
+
+
+allOfit_pca_labs.filt <- allOfit_pca_labs %>% filter(!is.na(class) & !is.na(Location))
+rownames(all.sigs.frac.raw) <- all.sigs$Samples
+rownames(allOfit_pca_labs.filt) <- allOfit_pca_labs.filt$sample_id
+
+all.sigs.frac.filt <- all.sigs.frac.raw[allOfit_pca_labs.filt$sample_id,]
+
+locations <-allOfit_pca_labs.filt$Location
+names(locations)  <- allOfit_pca_labs.filt$sample_id
+rna_class <-allOfit_pca_labs.filt$class
+names(rna_class)  <- allOfit_pca_labs.filt$sample_id
+
+pca_rda <- rda(all.sigs.frac.filt, scale = TRUE)
+
+envfit(pca_rda, locations[allOfit_pca_labs.filt$sample_id], permutations = 999, choices = 1:2)
+envfit(pca_rda, rna_class[allOfit_pca_labs.filt$sample_id], permutations = 999, choices = 1:2)
+
+ggplot(data=allOfit_pca_labs %>% filter(!is.na(class)),aes(y=Dim.1,x=Dim.2, color=class)) +
+  
+  geom_point(size=2, shape=16, aes(color=Location)) + 
+  
+  scale_shape_manual(values = c(3,4)) +
+  
+  labs(
+    y= "Mutational Signature PC1",
+    x= "Mutational Signature PC2",
+    
+    color="Subtype") +
+  guides(fill='none',shape='none')+
+  theme_bw(base_size=10) +
+
+  theme(plot.background = element_blank(),
+        panel.grid = element_blank(),
+        panel.background = element_blank())  + 
+  xlim(min(allOfit_pca_labs$Dim.2, na.rm=T)-0.1, max(allOfit_pca_labs$Dim.2, na.rm=T)+0.1 )+
+  ylim(min(allOfit_pca_labs$Dim.1, na.rm=T)-0.3, max(allOfit_pca_labs$Dim.1, na.rm=T)+0.1 )+
+  scale_fill_manual(  values=c(
+    "CMSB"    = "#EDA71A" , 
+    "CMSA" = "#04597C" 
+    
+  ), na.value = 'black') +
+  scale_color_manual(  values=c(
+    "CMSB"    = "#EDA71A" , 
+    "CMSA" = "#04597C" ,
+    'HCC-CCA' = "#b4b4b4ff",
+    'Perihilar_CCA_pCCA' = "#e59d54ff",
+    'Intrahepatic_CCA_iCCA' = "#fbcc7aff",
+    'Distal_CCA_dCCA' = "#ba7a44ff",
+    'Gallbladder' = "#855b40ff"
+    
+    
+  ), na.value = 'black')
+
+
+
+```

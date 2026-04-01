@@ -1,0 +1,74 @@
+---
+title: "Code and Data Walkthrough for: Integrated whole-genome and transcriptome sequencing reveals divergent evolutionary processes across biliary tract cancer subtypes"
+output:
+  html_document:
+    self_contained: true
+---
+
+## Overview
+
+This page provides rendered HTML outputs from r-markdown of the analyses for [this pre-print](https://www.biorxiv.org/content/10.64898/2025.12.12.693962v3). Code and data can be found on the [github repo](https://github.com/PanCuRx-OICR/btc-ccs) from which this page was generated. 
+
+⚠️ **Pre-publication material. All rights reserved.**
+
+***
+## Code Walkthrough
+
+### Part 0: Cohort setup
+- [Step 0.1](0.1_clinic.html) review patients and tumor specimens
+
+### Part 1: Signature network
+- [Step 1.1](1.1.classify_data.html) classify samples into existing transcriptomic classes
+- [Step 1.2](1.2_signature_network.html) create network of transcriptomic classes and train top scoring pair algorithm
+- [Step 1.2.2](1.2.2_internal_survival.html) analyze survival differences in study cohort
+- [Step 1.3.0](1.3.0_CNV_classifier.html) train copy number variant classifier
+- [Step 1.3.1](1.3.1_external_survival.html) validate survival differences in external cohort
+- [Step 1.4](1.4_location_etiology.html) classify samples by anatomical location
+
+### Part 2: Expression analysis
+- [Step 2.0](2.0_differential_expression.html) differential gene expression between subtypes
+- [Step 2.0.2](2.0.2.external_expression.html) differential methylation and protein expression between subtypes
+- [Step 2.1](2.1_nmf_rna.html) summarize NMF results
+- [Step 2.1.1](2.1.1_nmf_component_ID.html) identify NMF components
+- [Step 2.1.2](2.1.2_STIM.html) review immune signatures
+- [Step 2.2.1](2.2.1_reanalyze_SongG_2022.html) scRNA re-analysis of [Song G. et al. 2022](https://doi.org/10.1038/s41467-022-29164-0)
+- [Step 2.2.1](2.2.2_reanalyze_Zhang_2020.html) scRNA re-analysis of [Zhang et al. 2020](https://doi.org/10.1016/j.jhep.2020.05.039)
+- [Step 2.2.1](2.2.3_reanalyze_Shi_2022.html) scRNA re-analysis of [Shi et al. 2022](https://doi.org/10.1038/s41698-022-00300-9)
+
+### Part 3: Genetic Drivers
+- [Step 3.0](3.0_get_ssm_drivers.html) small substitution drivers
+- [Step 3.1](3.1_run_fishhook.html) structural variant recurrence
+- [Step 3.2](3.2_cooccurs.html) co-occurence of mutations
+- [Step 3.3](3.3_gistic_filter.html) copy number variant recurrence and effects on gene expression 
+
+### Part 4: Mutational Landscape
+- [Step 4.0](4.0.mutational_landscape.html) assemble complex biomarkers (MSI, HRD, TMB)
+- [Step 4.1](4.1.mutation_differences.html) CCS differences between mutations
+- [Step 4.2](4.2_clonality.html) analyze clonality
+- [Step 4.3](4.3_evolutionary_timing.html) compare mutational timing
+
+***
+## Data Walkthrough
+Below, we also offer the processed data supporting the analyses. Primary data is available upon completion of a data access agreement (for info, please contact fbeaudry@oicr.on.ca).
+
+### RNA
+- [Get RNA TPMs](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/rna.tpm.ff.txt) normalized RNA read counts
+- [Get eCCS model](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/tps.classifier.rds)
+- [Get eCCS calls](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/all.eCMS.txt)
+- [Get cibersort immune profiles](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/LBR.cibersort.txt)
+
+### Copy Number
+- [Get Copy Number Profiles](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/all.seg.txt)
+- [Get gCCS calls](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/all.gCMS.txt)
+- [Get gCCS model](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/cnv.model.rds)
+
+### Small Substitutions
+- [Get small substitutions in genes](https://raw.githubusercontent.com/PanCuRx-OICR/btc-ccs/refs/heads/main/results/dnds_annotation.txt)
+- [Get single base substitution signatures](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/SBS.sig.txt)
+
+### HRD and MSI
+- [Get HRD calls](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/hrd.txt)
+- [Get MSI calls](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/msi.txt)
+
+***
+

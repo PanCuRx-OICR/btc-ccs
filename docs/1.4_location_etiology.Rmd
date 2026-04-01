@@ -1,0 +1,177 @@
+# Anatomical location by CCS
+We also check in this script whether primary/metastatic pairs have consistent CCS
+
+## Anatomical location
+Where in the biliary tract do the CCS show up most often?
+```{r}
+
+suppressPackageStartupMessages({
+
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(survival)
+library(survMisc)
+library(survminer)
+library(ggupset)
+})
+
+`%ni%` <- Negate(`%in%`)
+
+basedir = '~/Documents/scripts/github/btc-ccs/'
+secdir = '~/Documents/scripts/github/evolution/'
+source( file.path(basedir, "bin/BTC.functions.R"))
+
+predicted.w.score <- fread(file.path(basedir,'/results/all.eCMS.txt'))
+
+split_cols <-  data.frame(str_split_fixed(predicted.w.score$sample, "_", 3))
+predicted.w.score$BTC_ID <- paste(split_cols$X1, split_cols$X2, sep="_")
+
+clinic.sample.info <- fread(file.path(basedir,"/results/clinic.sample.info.txt"))
+split_cols <- data.frame(str_split_fixed(clinic.sample.info$BTC_ID, "_", 3))
+clinic.sample.info$BTCID <- paste(split_cols$X1, split_cols$X2, sep="")
+
+
+clinic.sample.info$Site_of_tissue[is.na(clinic.sample.info$Site_of_tissue) & 
+                                    clinic.sample.info$Sample_Progression == 'Primary' & 
+                                    clinic.sample.info$variable %in% c('Intrahepatic_CCA_iCCA','HCC-CCA') ] <- 'Liver'
+
+clinic.sample.info$Site_of_tissue[is.na(clinic.sample.info$Site_of_tissue) & 
+                                    clinic.sample.info$Sample_Progression == 'Primary' & 
+                                    clinic.sample.info$variable == 'Gallbladder' ] <- 'Gallbladder'
+
+clinic.sample.info$Site_of_tissue[is.na(clinic.sample.info$Site_of_tissue) & 
+                                    clinic.sample.info$Sample_Progression == 'Primary' & 
+                                    clinic.sample.info$variable == 'Perihilar_CCA_pCCA' ] <- 'Hepatic Duct'
+
+clinic.sample.info$Site_of_tissue[is.na(clinic.sample.info$Site_of_tissue) & 
+                                    clinic.sample.info$Sample_Progression == 'Primary' & 
+                                    clinic.sample.info$variable == 'Distal_CCA_dCCA' ] <- 'CBD'
+
+clinic.sample.info$Site_of_tissue[clinic.sample.info$Site_of_tissue == '' ] <- NA
+
+clinic.sample.info$site_of_tissue <- factor(clinic.sample.info$Site_of_tissue, 
+                                            levels = c("Liver" ,"Hepatic Duct","CBD","Gallbladder","Neck", "Spine","Abdomen"))
+
+
+clinic.sample.info$location <- clinic.sample.info$variable
+clinic.sample.info$location[clinic.sample.info$variable == "Distal_CCA_dCCA"] <- 'dCCA'
+clinic.sample.info$location[clinic.sample.info$variable == "Perihilar_CCA_pCCA"] <- 'pCCA'
+clinic.sample.info$location[clinic.sample.info$variable == "Intrahepatic_CCA_iCCA"] <- 'iCCA'
+clinic.sample.info$location[clinic.sample.info$variable == "Gallbladder"] <- 'GBC'
+
+clinic.sample.info$Location <- factor(clinic.sample.info$location, levels = c("HCC-CCA" ,"iCCA","pCCA", "dCCA","GBC"))
+
+clinic.sample.info.calls <- full_join(clinic.sample.info, predicted.w.score, by=c('BTC_ID'='BTC_ID','BTCID'='BTCID'))
+
+clinic.sample.info.calls$final.cms <- clinic.sample.info.calls$rna_class
+
+class.tissue.cms.n <- clinic.sample.info.calls %>% group_by(final.cms, site_of_tissue, Location) %>% tally() 
+class.tissue.cms.n$n[class.tissue.cms.n$final.cms == 'CMS-B' & !is.na(class.tissue.cms.n$final.cms)] <- 
+  -class.tissue.cms.n$n[class.tissue.cms.n$final.cms == 'CMS-B'& !is.na(class.tissue.cms.n$final.cms)]
+
+class.tissue.cms.n$Location.rev <- factor(class.tissue.cms.n$Location, levels = rev(c("HCC-CCA" ,"iCCA","pCCA","GBC", "dCCA")))
+class.tissue.cms.n$CMS <- factor(class.tissue.cms.n$final.cms, levels = rev(c("CMS-A" ,"CMS-B")))
+
+cms.histology.biopsy.plot <- 
+         ggplot(class.tissue.cms.n %>% filter(!is.na(Location) & !is.na(site_of_tissue) & !is.na(final.cms)), aes(x=Location.rev, y=n, fill=site_of_tissue)) + 
+         facet_grid(.~CMS, space='free',scales='free') + 
+         geom_bar(stat='identity', position = 'stack') + 
+           theme_bw(base_size=10) + 
+         labs(x='Histological Subtype of Primary', y='Tumour Count', fill='Site of\nBiopsy') +
+         theme(panel.grid = element_blank(),
+               panel.background = element_blank(),
+               panel.border = element_blank(),
+               plot.background = element_blank(),
+               axis.title.x = element_blank(),
+               legend.background = element_blank(),
+               panel.spacing = unit(3, "lines"),
+              # legend.text = element_text(size = 6), 
+               legend.key.size = unit(0.5, "lines"),    
+              axis.title.y = element_blank(),
+              legend.position = 'bottom',
+              axis.line.x = element_line(color = "black")
+         )+
+         scale_fill_manual(values = c(
+           
+           "Liver"  = "forestgreen" ,
+           "Hepatic Duct"  = "skyblue" ,
+           "CBD"  = "cornflowerblue" ,
+           "Gallbladder"  = "darkblue" ,
+           
+           
+           "Abdomen"   = 'grey60',
+           "Spine"   = 'grey70',
+           "Neck"   = 'grey80'
+         )) + coord_flip()
+       
+cms.histology.biopsy.plot
+ggsave(paste0(basedir, "/results/fig/FIG2d.cms.histology.biopsy.svg"),plot =
+         cms.histology.biopsy.plot
+       , device = "svg", height = 70, width = 80, units = 'mm' )
+
+class.tissue.cms.n %>% filter(!is.na(Location) & !is.na(site_of_tissue) & !is.na(final.cms))
+class.tissue.cms.n  %>% filter( !is.na(final.cms)) %>% summarise(sum=sum(abs(n)))
+
+tibble(class.tissue.cms.n)  %>% dplyr::filter( !is.na(final.cms) & Location == 'iCCA') 
+
+clinic.sample.info.calls %>% filter(Sample_Progression == 'Metastasis' & !is.na(final.cms)) %>% tally()
+clinic.sample.info.calls %>% filter(Sample_Progression == 'Metastasis' & 
+                                      !is.na(final.cms) &
+                                      site_of_tissue == 'Liver' &
+                                      location  %in% c('GBC','dCCA','pCCA')) %>% tally()
+
+```
+## Paired primary-metastatic samples
+How often do tumors switch between the CCS during metastasis?
+
+```{r}
+
+
+BTC_clinical.tumours <- fread(file.path(basedir,'/source_data/BTC_clinical.tumours.tsv'), header=T)
+btc.cellularity.pipeline <- fread(file.path(secdir,'/results/btc.cellularity.pipeline.txt'), col.names = c('Sample','cellularity','ploidy'), header=F)
+BTC_clinical.tumours <- full_join(BTC_clinical.tumours, btc.cellularity.pipeline, by=c('Sample'='Sample'))
+
+sample.list <- fread(file.path(basedir,'/source_data/sample.list.txt'), col.names = c('donor','tumour','normal'), header=F)
+
+BTC_clinical.tumours$curated <- F
+BTC_clinical.tumours$curated[BTC_clinical.tumours$Sample %in% sample.list$tumour] <- T
+
+remove.low.celullarity = T
+if(remove.low.celullarity){
+  BTC_clinical.tumours <- BTC_clinical.tumours[BTC_clinical.tumours$cellularity > 0.3]
+}
+
+replicates <- BTC_clinical.tumours %>% group_by(Donor) %>% tally() %>% filter(n>1)
+BTC_clinical.tumours$replicates <- F
+BTC_clinical.tumours$replicates[BTC_clinical.tumours$Donor %in% replicates$Donor] <- T
+
+BTC_clinical.tumours$curated[BTC_clinical.tumours$curated == F & BTC_clinical.tumours$replicates == T] <- 'replicate'
+BTC_clinical.tumours$BTCID <- gsub('_','',BTC_clinical.tumours$Donor)
+
+rna.tpm.all <- fread(file.path(secdir,"/results/rna.tpm.all.txt"))
+rna.tpm.mat <- as.matrix(rna.tpm.all[,-1])
+replicate.tumour.ids <- BTC_clinical.tumours$Sample[BTC_clinical.tumours$replicates == T]
+replicate.tumour.ids <- intersect(replicate.tumour.ids, colnames(rna.tpm.mat))
+replicate.tpm.mat <- rna.tpm.mat[,replicate.tumour.ids]
+rownames(replicate.tpm.mat) <- rna.tpm.all$gene_name
+
+classifier <- readRDS(file.path(basedir,'/results/tps.classifier.rds'))
+
+replicates.classed <- 
+  predict_TSP_with_confidence(tpm_matrix=replicate.tpm.mat, tsp_classifier=classifier, confidence_cutoff = 0.8 )
+
+split_cols <-  data.frame(str_split_fixed(rownames(replicates.classed), "_", 3))
+replicates.classed <- cbind.data.frame('BTCID'=paste(split_cols$X1, split_cols$X2, sep=""),
+                                       'sample'=rownames(replicates.classed), 
+                                       replicates.classed) 
+
+replicates.classed %>% group_by(BTCID) %>% 
+  summarise(count = n(),consensus = mean(as.numeric(predicted_label))) %>%
+  filter(count > 1 & !is.na(consensus))
+
+
+```
+
