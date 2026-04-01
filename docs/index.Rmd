@@ -1,5 +1,5 @@
 ---
-title: "Code and Data Walkthrough for: Integrated whole-genome and transcriptome sequencing reveals divergent evolutionary processes across biliary tract cancer subtypes"
+title: "Code Walkthrough for: Integrated whole-genome and transcriptome sequencing reveals divergent evolutionary processes across biliary tract cancer subtypes"
 output:
   html_document:
     self_contained: true
@@ -7,7 +7,7 @@ output:
 
 ## Overview
 
-This page provides rendered HTML outputs from r-markdown of the analyses for [this pre-print](https://www.biorxiv.org/content/10.64898/2025.12.12.693962v3). Code and data can be found on the [github repo](https://github.com/PanCuRx-OICR/btc-ccs) from which this page was generated. 
+This page provides rendered HTML outputs from r-markdown of the analyses for [this pre-print](https://www.biorxiv.org/content/10.64898/2025.12.12.693962v3). Code can be found on the [github repo](https://github.com/PanCuRx-OICR/btc-ccs) from which this page was generated. 
 
 ⚠️ **Pre-publication material. All rights reserved.**
 
@@ -46,29 +46,6 @@ This page provides rendered HTML outputs from r-markdown of the analyses for [th
 - [Step 4.1](4.1.mutation_differences.html) CCS differences between mutations
 - [Step 4.2](4.2_clonality.html) analyze clonality
 - [Step 4.3](4.3_evolutionary_timing.html) compare mutational timing
-
-***
-## Data Walkthrough
-Below, we also offer the processed data supporting the analyses. Primary data is available upon completion of a data access agreement (for info, please contact fbeaudry@oicr.on.ca).
-
-### RNA
-- [Get RNA TPMs](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/rna.tpm.ff.txt) normalized RNA read counts
-- [Get eCCS model](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/tps.classifier.rds)
-- [Get eCCS calls](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/all.eCMS.txt)
-- [Get cibersort immune profiles](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/LBR.cibersort.txt)
-
-### Copy Number
-- [Get Copy Number Profiles](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/all.seg.txt)
-- [Get gCCS calls](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/all.gCMS.txt)
-- [Get gCCS model](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/cnv.model.rds)
-
-### Small Substitutions
-- [Get small substitutions in genes](https://raw.githubusercontent.com/PanCuRx-OICR/btc-ccs/refs/heads/main/results/dnds_annotation.txt)
-- [Get single base substitution signatures](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/SBS.sig.txt)
-
-### HRD and MSI
-- [Get HRD calls](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/hrd.txt)
-- [Get MSI calls](https://github.com/PanCuRx-OICR/btc-ccs/blob/main/results/msi.txt)
 
 ***
 
