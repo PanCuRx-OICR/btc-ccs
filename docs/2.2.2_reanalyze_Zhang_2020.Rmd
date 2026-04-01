@@ -694,11 +694,6 @@ ggplot(df.cnv %>% filter(!is.na(donor)), aes(x=prob, fill=Top_NMF)) +
   scale_fill_manual(values =  
                       color.set, na.value = 'grey'
   ) 
-zhang.gCMS_prob.NMF.plot
-ggsave(file.path(basedir, "/results/zhang.gCMS_prob.NMF.svg"), plot = 
-
-zhang.gCMS_prob.NMF.plot
-     , device = "svg", height = 100,width = 150, units = 'mm' )
 
 df.cnv$gCMS <- NA
 df.cnv$gCMS[df.cnv$prob > 0.8 ] <- 'CMS-A'

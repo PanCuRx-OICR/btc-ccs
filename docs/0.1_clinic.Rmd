@@ -1182,7 +1182,7 @@ t1.df$`**Characteristic**`[t1.df$`**Characteristic**` == "Distal_CCA_dCCA"] <- '
 write.table(t1.df, file = paste0(basedir, "/results/TableS1.cohort_summary.txt"), sep = "\t", row.names = FALSE, quote = FALSE)
 
 write.table( timeline.outcome,  
-             file = file.path(basedir,"/results/timeline.outcome.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+             file = file.path(secdir,"/results/timeline.outcome.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
 
 ```
 
