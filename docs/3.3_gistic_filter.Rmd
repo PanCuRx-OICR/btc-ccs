@@ -570,8 +570,7 @@ if(parameterize.CNVs){
             
           this.full.set$call <- factor(this.full.set$call, levels = c('Deletion','wt', 'Amplification'))
           
-          ggsave(paste0(basedir, "/results/exp.fit/",this.cytoband,'.',this.gene,".cnv.fit.",this.cms,".svg"), plot =
-                   
+
             print(
               cowplot::plot_grid(
                 ggplot(just.this[just.this$TPM != 0,], aes(x = alleles.adj)) +
@@ -604,8 +603,7 @@ if(parameterize.CNVs){
               , 
               ncol = 3,align = 'hv', axis = "rlbt", rel_widths =   c(0.75,-0.1,0.3))
             )
-            , device = "svg",width = 10, height = 5 )
-            
+
         }
       }
     }
