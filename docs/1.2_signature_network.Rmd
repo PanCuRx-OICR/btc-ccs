@@ -35,7 +35,7 @@ packageVersion('MCL')
 
 set.seed(123)
 
-basedir = '~/Documents/scripts/github/btc-ccs/'
+basedir = '~/Documents/scripts/github/btc-ccs-old/'
 secdir = '~/Documents/scripts/github/evolution/'
 
 source( file.path(basedir, "bin/BTC.functions.R"))
@@ -910,4 +910,102 @@ ggsave(paste0(basedir, "/results/fig/FIGS2E.expression_signatures.cms-tsp.svg"),
 ```{r, fig.asp=75/210, fig.align="center"}
 
 my.plot
+
 ```
+## Visualize the TSP algo
+
+```{r}
+
+
+tsp.LBR.rna.typed <- left_join(tsp.LBR.rna, predicted.w.score, by=c('variable'='sample','Samples'='Samples'))
+
+
+
+tsp.ccs <- tsp.LBR.rna.typed %>% filter(!is.na(rna_class)) %>% group_by(gene, rna_class) %>% summarise(mean.tpm = mean(tpm.scale, na.rm=T))
+
+top.scoring.pairs <- data.frame(classifier$TSPs)
+names(top.scoring.pairs) <- c('ccsa','ccsb')
+top.scoring.pairs$pair.id <- c(1:nrow(top.scoring.pairs))
+top.scoring.pairs.m <- reshape2::melt(top.scoring.pairs, id.vars=c('pair.id') )
+
+tsp.ccs <- left_join(tsp.ccs, top.scoring.pairs.m, by=c('gene'='value'))
+
+
+library(ggh4x)
+
+
+
+# Bottom axis: shift every other label DOWN
+stagger_bottom <- function(labels) {
+  labs <- unname(labels)
+  idx <- seq_along(labs) %% 2 == 0
+  labs[idx] <- paste0("\n", labs[idx])
+  setNames(labs, names(labels))
+}
+
+# Top axis: shift every other label UP
+stagger_top <- function(labels) {
+  labs <- unname(labels)
+  idx <- seq_along(labs) %% 2 == 0
+  labs[idx] <- paste0(labs[idx], "\n")
+  setNames(labs, names(labels))
+}
+
+
+gene_labels_bottom_staggered <- stagger_bottom(classifier$TSPs[,2])
+gene_labels_top_staggered    <- stagger_top( classifier$TSPs[,1])
+
+tsp.ccs.plot <- 
+ggplot(tsp.ccs, aes(x = factor(pair.id), y = rna_class, fill = mean.tpm)) +
+  geom_tile() +
+  facet_grid(variable ~ ., scales = "free", space = "free") +
+
+  facetted_pos_scales(
+    x = list(
+      variable == "ccsa" ~ scale_x_discrete(
+        labels = gene_labels_bottom_staggered,
+        sec.axis = dup_axis(labels = gene_labels_top_staggered)
+      ),
+      TRUE ~ scale_x_discrete(labels = gene_labels_bottom_staggered)
+    )
+  ) +
+
+  scale_fill_gradient2(
+    low = "darkblue",
+    mid = "white",
+    high = "darkred",
+    midpoint = 0,
+    na.value = "grey80"
+  ) +coord_fixed() +
+  theme_bw(base_size = base.font.size) +
+  theme(
+    axis.text.x = element_text(lineheight = 1.1, size = 14, face = "italic"),
+    axis.text.y = element_text(size = 20),
+    axis.ticks.x = element_blank(),
+    panel.background = element_blank(), #transparent panel bg
+    plot.background = element_blank(), #transparent plot bg
+    panel.grid.major.x = element_blank(), #remove major gridlines
+    panel.grid.minor = element_blank(), #remove minor gridlines
+    legend.background = element_rect(color = NA,fill=NA), #transparent legend bg
+    legend.box.background = element_rect(color = NA,fill=NA), #transparent legend panel
+    axis.title =element_blank(),
+    legend.spacing = unit(0, 'cm'),
+    panel.border = element_blank(),
+    plot.title = element_blank(),
+    strip.text = element_blank(),
+    strip.background = element_blank(),
+    legend.position = 'bottom'
+  )
+
+ tsp.ccs.plot
+
+ggsave(paste0(basedir, "/results/fig/CCF26.tsp.ccs.plot.svg"), 
+       plot = tsp.ccs.plot, device = "svg",height = 100 ,width = 260,  units = 'mm' )
+
+
+```
+
+
+
+
+
