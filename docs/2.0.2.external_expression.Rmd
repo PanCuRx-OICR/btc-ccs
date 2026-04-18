@@ -36,7 +36,7 @@ packageVersion('limma')
 
 `%ni%` <- Negate(`%in%`)
 
-basedir = '~/Documents/scripts/github/btc-ccs/'
+basedir = '~/Documents/scripts/github/btc-ccs-old/'
 secdir = '~/Documents/scripts/github/evolution/'
 
 source( file.path(basedir, "bin/BTC.functions.R"))
@@ -51,7 +51,7 @@ CMSB_MARKERS = c('S100P', 'MKI67','SSTR1','MUC2','MUC5AC','CDX2','KRT20','PTGS2'
 
 ```
 
-## JUSAKUL METHYLATION
+## Methylation variance (from Jusakul et al.)
 We take the methylation array data from Jusakul et al and identify differentially methylated genes between samples classified by eCCS (in step 1.3.1). We also add in a little analysis of IDH1+ samples and find patterns suggestive that within CCS-A, these samples might be doing their own thing (as expected from methylation of IDH1+ samples).
 
 ```{r}
@@ -144,7 +144,102 @@ ggplot(tsne.dims, aes(x=tsne.dim.1, y=tsne.dim.2, color=rna_class)) +
          scale_shape_manual(values = c('wt'=1,'IDH1+'=16)) +
          
          scale_color_manual(values=c("#04597C", "#EDA71A"), na.value = 'grey80') + theme(panel.grid = element_blank())
-       
+
+## explain variance
+
+jusakul_sample <- fread(file.path(secdir,'/source_data/cbioportal/chol_icgc_2017/data_clinical_sample.txt'), skip=4)
+jusakul_patient <- fread(file.path(secdir,'/source_data/cbioportal/chol_icgc_2017/data_clinical_patient.txt'), skip=4)
+
+jusakul_patient <- full_join(jusakul_patient, jusakul_sample, by=c('PATIENT_ID'='PATIENT_ID'))
+jusakul_patient <- jusakul_patient %>% filter(ANATOMICAL_SUBTYPE != 'N/A' & SAMPLE_ID %in% tsne.dims$icgc_id[!is.na(tsne.dims$rna_class)] )
+table(jusakul_patient$ANATOMICAL_SUBTYPE)
+
+jusakul_methylation.pat <- left_join(jusakul_patient, jusakul_methylation.meta, by=c('SAMPLE_ID'='icgc_id'))
+
+
+#TODO: subset to patients with all info (CCS, location and methylation)
+
+locations <- jusakul_methylation.pat$ANATOMICAL_SUBTYPE
+names(locations) <- jusakul_methylation.pat$SAMPLE_ID
+
+rna_class <- jusakul_methylation.pat$rna_class
+names(rna_class) <- jusakul_methylation.pat$SAMPLE_ID
+
+betas.t <- t(betaVals)
+betas.t.filt <- betas.t[jusakul_methylation.pat$barcode,]
+betas_rda <- rda(betas.t.filt, scale = TRUE)
+
+
+# Test fit on top 2 axes
+r.tab = NULL
+for(i in c(1:5)){
+
+  fit2_f1 <- envfit(betas_rda, locations, permutations = 999, choices = i:i)
+  fit2_f2 <- envfit(betas_rda, rna_class, permutations = 999, choices = i:i)
+
+  this.r.tab <- rbind.data.frame ( cbind('i'=as.numeric(i),
+               'f'='location',
+               'r'=unlist(fit2_f1$factors$r),
+               'p'=unlist(fit2_f1$factors$pvals)
+  ),
+  cbind('i'=as.numeric(i),
+        'f'='eCCs',
+        'r'=unlist(fit2_f2$factors$r),
+        'p'=unlist(fit2_f2$factors$pvals)
+  )
+  )
+  if(is.null(r.tab)){
+    r.tab <- this.r.tab
+  } else{
+    r.tab <- rbind.data.frame(r.tab,this.r.tab)
+  }
+  
+}
+
+r.tab$p <- as.numeric(r.tab$p)
+r.tab$r <- as.numeric(r.tab$r)
+
+r.tab$p.sig <- NA
+r.tab$p.sig[r.tab$p < 0.05] <- r.tab$p[r.tab$p < 0.05]
+
+r.tab$pc.i <- paste0('PC',r.tab$i)
+r.tab$pc.i <- factor(r.tab$pc.i, levels=rev(paste0('PC',c(1:5)) ))
+r.tab
+
+methyl.rda.plot <- 
+ggplot(r.tab %>% filter(i %in% c(2:4)), aes(y=pc.i, x=r, shape=f)) + 
+  geom_point(aes( size=-log(p.sig)), fill='white') + 
+  geom_line(aes(group=pc.i), color='white',
+            arrow = arrow(length = unit(1, "mm"), type = "closed"), 
+  )+
+  geom_line(aes(group=pc.i) )+
+  scale_shape_manual(values = c(16,21)) +
+  scale_size(range = c(5, 10)) +
+  theme_bw(base_size=30)+
+  theme(
+    plot.margin = unit(c(0, 0, 0, 5), "mm"),
+    panel.background = element_blank(),
+    #panel.border = element_blank(),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = 'bottom'
+  ) + xlim(0,0.3) + labs(x=expression(r^2~ "of methylation variance")) +
+  guides(shape='none',size='none')
+
+methyl.rda.plot
+
+ggsave(file.path(basedir,"/results/fig/CCF26.methyl_rda.svg"),plot =
+  methyl.rda.plot       
+, device = "svg", height = 56,width = 200 , units='mm')
+
+```
+
+## Differential Methylation
+
+```{r}
+
 pheno <- jusakul_methylation.meta %>% filter(!is.na(barcode) ) %>% 
   dplyr::select(barcode, icgc_id, V6, rna_class, confidence.polarized) %>% DataFrame()
 rownames(pheno) <- pheno[,1]

@@ -42,7 +42,7 @@ this_theme <- theme(
   panel.border = element_blank(),
   legend.spacing = unit(0, 'cm'),)
 
-basedir = '~/Documents/scripts/github/btc-ccs/'
+basedir = '~/Documents/scripts/github/btc-ccs-old/'
 secdir = '~/Documents/scripts/github/evolution/'
 
 sigprofiler.meta <- fread(file.path(basedir,'/source_data/sigprofiler.meta.txt'))
@@ -322,24 +322,16 @@ t.test(log(mutation.landscape$tmb[mutation.landscape$broad_loc == 'eCCA']),
 
 mutation.landscape$tmb.log <- log(mutation.landscape$tmb)
 
-
-
 vars <- c("tmb.log", "Location", "rna_class")
 d <- na.omit(mutation.landscape[ , ..vars])
-
-m1 <- lm(tmb.log ~ Location, data = d)
-m2 <- lm(tmb.log ~ rna_class, data = d)
-
-summ <- function(m) c(
-  adj_R2 = summary(m)$adj.r.squared,
-  AIC    = AIC(m),
-  BIC    = BIC(m)
-)
-rbind(Location = summ(m1), rna_class = summ(m2))
 
 full <- lm(tmb.log ~ Location + rna_class, data = d)
 
 Anova(full, type = 2)
+
+
+
+
 
 ```
 
@@ -806,25 +798,9 @@ ggsave(file.path(basedir,"/results/fig/FIG5c.SIGPCA.svg"),plot =
 
 allOfit_pca_labs <- full_join(allOfit_pca_labs, timeline.outcome, by=c('BTC_ID'='BTC_ID'))
 
-
-
 allOfit_pca_labs.filt <- allOfit_pca_labs %>% filter(!is.na(class) & !is.na(Location))
-rownames(all.sigs.frac.raw) <- all.sigs$Samples
-rownames(allOfit_pca_labs.filt) <- allOfit_pca_labs.filt$sample_id
 
-all.sigs.frac.filt <- all.sigs.frac.raw[allOfit_pca_labs.filt$sample_id,]
-
-locations <-allOfit_pca_labs.filt$Location
-names(locations)  <- allOfit_pca_labs.filt$sample_id
-rna_class <-allOfit_pca_labs.filt$class
-names(rna_class)  <- allOfit_pca_labs.filt$sample_id
-
-pca_rda <- rda(all.sigs.frac.filt, scale = TRUE)
-
-envfit(pca_rda, locations[allOfit_pca_labs.filt$sample_id], permutations = 999, choices = 1:2)
-envfit(pca_rda, rna_class[allOfit_pca_labs.filt$sample_id], permutations = 999, choices = 1:2)
-
-ggplot(data=allOfit_pca_labs %>% filter(!is.na(class)),aes(y=Dim.1,x=Dim.2, color=class)) +
+ggplot(data=allOfit_pca_labs.filt,aes(y=Dim.1,x=Dim.2, color=class)) +
   
   geom_point(size=2, shape=16, aes(color=Location)) + 
   
@@ -859,6 +835,84 @@ ggplot(data=allOfit_pca_labs %>% filter(!is.na(class)),aes(y=Dim.1,x=Dim.2, colo
     
     
   ), na.value = 'black')
+
+
+
+rownames(all.sigs.frac.raw) <- all.sigs$Samples
+rownames(allOfit_pca_labs.filt) <- allOfit_pca_labs.filt$sample_id
+
+all.sigs.frac.filt <- all.sigs.frac.raw[allOfit_pca_labs.filt$sample_id,]
+
+locations <-allOfit_pca_labs.filt$Location
+names(locations)  <- allOfit_pca_labs.filt$sample_id
+rna_class <-allOfit_pca_labs.filt$class
+names(rna_class)  <- allOfit_pca_labs.filt$sample_id
+
+pca_rda <- rda(all.sigs.frac.filt, scale = TRUE)
+
+# Test fit on top 2 axes
+r.tab = NULL
+for(i in c(1:5)){
+
+  fit2_f1 <- envfit(pca_rda,locations[allOfit_pca_labs.filt$sample_id], permutations = 999, choices = i:i)
+  fit2_f2 <- envfit(pca_rda, rna_class[allOfit_pca_labs.filt$sample_id], permutations = 999, choices = i:i)
+
+  this.r.tab <- rbind.data.frame ( cbind('i'=as.numeric(i),
+               'f'='location',
+               'r'=unlist(fit2_f1$factors$r),
+               'p'=unlist(fit2_f1$factors$pvals)
+  ),
+  cbind('i'=as.numeric(i),
+        'f'='eCCs',
+        'r'=unlist(fit2_f2$factors$r),
+        'p'=unlist(fit2_f2$factors$pvals)
+  )
+  )
+  if(is.null(r.tab)){
+    r.tab <- this.r.tab
+  } else{
+    r.tab <- rbind.data.frame(r.tab,this.r.tab)
+  }
+  
+}
+
+r.tab$p <- as.numeric(r.tab$p)
+r.tab$r <- as.numeric(r.tab$r)
+
+r.tab$p.sig <- NA
+r.tab$p.sig[r.tab$p < 0.05] <- r.tab$p[r.tab$p < 0.05]
+
+r.tab$pc.i <- paste0('PC',r.tab$i)
+r.tab$pc.i <- factor(r.tab$pc.i, levels=rev(paste0('PC',c(1:5)) ))
+r.tab
+
+sig.rda.plot <- 
+ggplot(r.tab %>% filter(i %in% c(2,4)), aes(y=pc.i, x=r, shape=f)) + 
+  geom_point(aes( size=-log(p.sig)), fill='white') + 
+  geom_line(aes(group=pc.i), color='white',
+            arrow = arrow(length = unit(1, "mm"), type = "closed"), 
+  )+
+  geom_line(aes(group=pc.i) )+
+  scale_shape_manual(values = c(16,21)) +
+  scale_size(range = c(5, 10)) +
+  theme_bw(base_size=30)+
+  theme(
+    plot.margin = unit(c(0, 0, 0, 5), "mm"),
+    panel.background = element_blank(),
+    #panel.border = element_blank(),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = 'bottom'
+  ) + xlim(0.05,0.35) + labs(x=expression(r^2~ "of mutational variance")) +
+  guides(shape='none',size='none')
+
+sig.rda.plot
+
+ggsave(file.path(basedir,"/results/fig/CCF26.sig_rda.svg"),plot =
+  sig.rda.plot       
+, device = "svg", height = 50,width = 200 , units='mm')
 
 
 

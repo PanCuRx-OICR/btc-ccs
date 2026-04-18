@@ -21,7 +21,7 @@ suppressPackageStartupMessages({
 
 `%ni%` <- Negate(`%in%`)
 
-basedir = '~/Documents/scripts/github/btc-ccs/'
+basedir = '~/Documents/scripts/github/btc-ccs-old/'
 secdir = '~/Documents/scripts/github/evolution/'
 source( file.path(basedir, "bin/BTC.functions.R"))
 
@@ -173,6 +173,35 @@ ggsave(file.path(basedir,"/results/fig/FIG3A.EXPCA.svg"),plot =
   EXPCA.plot       
 , device = "svg", height = 85,width = 45 , units='mm')
 
+exp.rda.plot <- 
+ggplot(r.tab %>% filter(i %ni% c(2)), aes(y=pc.i, x=r, shape=f)) + 
+  geom_point(aes( size=-log(p.sig)), fill='white') + 
+  geom_line(aes(group=pc.i), color='white',
+            arrow = arrow(length = unit(1, "mm"), type = "closed"), 
+  )+
+  geom_line(aes(group=pc.i) )+
+  scale_shape_manual(values = c(16,21)) +
+  scale_size(range = c(5, 10)) +
+  theme_bw(base_size=30)+
+  theme(
+    plot.margin = unit(c(0, 0, 0, 5), "mm"),
+    panel.background = element_blank(),
+    #panel.border = element_blank(),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = 'bottom'
+  ) + xlim(0,0.75) + labs(x=expression(r^2~ "of expression variance")) +
+  guides(shape='none',size='none')
+
+exp.rda.plot
+
+ggsave(file.path(basedir,"/results/fig/CCF26.exp_rda.svg"),plot =
+  exp.rda.plot       
+, device = "svg", height = 50,width = 200 , units='mm')
+
+
 ```
 
 ```{r, fig.asp=85/45, fig.width=3, fig.align="center"}
@@ -200,6 +229,12 @@ confident.rna.ff <- this_rna[,confident.samples]
 run.deseq = F
 if(run.deseq){
   
+  cms_labels <- predicted.w.score$rna_class[predicted.w.score$sample %in% confident.samples]
+  names(cms_labels) <- predicted.w.score$sample[predicted.w.score$sample %in% confident.samples]
+
+  expdesign <-  as.matrix(as.factor(cms_labels))
+  colnames(expdesign) <- 'btc'
+
   cds = DESeqDataSetFromMatrix(countData = confident.rna.ff, 
                                colData = expdesign, 
                                design = ~ btc)
