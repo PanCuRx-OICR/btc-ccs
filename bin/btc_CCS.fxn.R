@@ -3,7 +3,7 @@
 library(data.table)
 library(optparse)
 
-predict_TSP_with_confidence <- function(tsp_classifier, tpm_matrix, confidence_cutoff = 0.5) {
+predict_TSP_with_confidence <- function(tsp_classifier, tpm_matrix, confidence_cutoff = 10/16) {
   
   if(length(tsp_classifier$TSPs) > nrow(tsp_classifier$aliases['symbol'])){
     stop('There is a formatting error in aliases, some genes are missing')
