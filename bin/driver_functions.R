@@ -1,101 +1,4 @@
 
-make_cn_tpm_table <- function(this_gene, BTC.cnv.matrix, cnv.gene_list, all_rna, rna.gene_list){
-  cnv_named <-  cbind.data.frame(
-    'tumour' = names(BTC.cnv.matrix),
-    'cnv' = unlist(BTC.cnv.matrix[cnv.gene_list == this_gene,]),
-    'cnv.rank'= rank(BTC.cnv.matrix[cnv.gene_list == this_gene,])
-  )
-  
-  tpm_named <-  cbind.data.frame(
-    'tumour' = names(all_rna),
-    'tpm'= unlist(all_rna[rna.gene_list == this_gene,]),
-    'tpm.rank'= rank(all_rna[rna.gene_list == this_gene,])
-  )
-  
-  cnv.tpm <- inner_join(cnv_named, tpm_named, by=c('tumour'='tumour'))
-  return(cnv.tpm)
-}
-
-
-get_cn_tpm_correlations <- function(this_gene, BTC.cnv.matrix, cnv.gene_list, all_rna, rna.gene_list ){
-  
-  cnv.tpm <- make_cn_tpm_table(this_gene, BTC.cnv.matrix, cnv.gene_list, all_rna, rna.gene_list)
-  
-  this.lm <- lm( tpm ~  cnv , cnv.tpm)
-  this.lm <- summary(this.lm)
-  
-  if(Inf %in% log(cnv.tpm$cnv) | -Inf %in% log(cnv.tpm$cnv)){
-    log.lm.p.coefficient = NA
-    log.lm.r = NA
-  } else {
-    this.log.lm <- lm( tpm ~  log(cnv) , cnv.tpm)
-    this.log.lm <- summary(this.log.lm)
-    log.lm.p.coefficient = this.log.lm$coefficients[[8]]
-    log.lm.r = this.log.lm$adj.r.squared
-  }
-  
-  this.corr <- cor.test(x=cnv.tpm$cnv, y=cnv.tpm$tpm, method = 'spearman')
-  
-  this.tmp.rel <- cbind.data.frame('gene'=this_gene, 
-                                   'lm.p'=this.lm$coefficients[[8]], 
-                                   'lm.r2'=this.lm$adj.r.squared, 
-                                   'log.lm.p'= log.lm.p.coefficient,
-                                   'log.lm.r2'= log.lm.r,
-                                   'sr.p' = this.corr$p.value,
-                                   'sr.rho' = this.corr$estimate
-  )
-  return(this.tmp.rel)
-}
-
-
-filter_and_annotate_centromeres <- function(scores.gistic, centromeres, manual_filter_file, MIN_PEAK_AMPLITUDE = 10, MIN_SIZE_FROM_CENTROMERE = 5000000){
-  REMOVE_THESE_CHROMOSOMES = c("X","Y")
-  
-  manually_remove_gistic <- fread(manual_filter_file)
-  
-  for(this_row_index in c(1:nrow(scores.gistic))){
-    this_chr <- scores.gistic$Chromosome[this_row_index]
-    
-    if(scores.gistic$minus_log_qvalue[this_row_index] > MIN_PEAK_AMPLITUDE ){
-      
-      
-      this_centromere_pos <- centromeres$V2[centromeres$V1 == this_chr]
-      
-      cat("checking peak on ", this_chr, "\n")
-      
-      if(abs(scores.gistic$Start[this_row_index] - this_centromere_pos) < MIN_SIZE_FROM_CENTROMERE){
-        scores.gistic$minus_log_qvalue[this_row_index] <- 0
-        cat("removing peak on ", this_chr, " within ", abs(scores.gistic$Start[this_row_index] - this_centromere_pos), "\n")
-        
-      }
-      
-     
-      
-    }
-    for(manual_region_index in c(1:nrow(manually_remove_gistic))){
-      if(manually_remove_gistic$V2[manual_region_index] == paste0('chr',this_chr)){
-        if(scores.gistic$Start[this_row_index] <= (manually_remove_gistic$V4[manual_region_index] ) & 
-           scores.gistic$End[this_row_index] >= (manually_remove_gistic$V3[manual_region_index] )
-        ){
-          scores.gistic$minus_log_qvalue[this_row_index] <- 0
-        }
-      }
-    }
-    
-    
-  }
-  
-  centromeres <- centromeres[centromeres$V1 %ni% REMOVE_THESE_CHROMOSOMES,]
-  centromeres$holder <- NA
-  centromeres$Type <- "Cent"
-  centromeres_rearr <- centromeres[,c("Type", "V1", "V2", "V2", "holder", "holder", "holder", "holder", "holder")]
-  names(centromeres_rearr) <- names(scores.gistic)
-  
-  scores.gistic <- rbind.data.frame(scores.gistic, centromeres_rearr)
-  scores.gistic$cent[scores.gistic$Type == "Cent"] <- T
-  return(scores.gistic)
-}
-
 collate_barebones_vcf_write <- function(sample.list, inpath, outpath='~/Documents', variant_types = c("indel","snv","dbs")){
   first=T
   for(tumor in sample.list$V2){
@@ -142,6 +45,148 @@ collate_barebones_vcf_write <- function(sample.list, inpath, outpath='~/Document
   )
 }
 
+
+compare_ccs_dnds <- function(dndscv_muts, predicted.w.score, cohort){
+  
+  dndscv_muts.cmsa <- dndscv_muts %>% filter(sampleID %in% predicted.w.score$Sample[predicted.w.score$rna_class == 'CCS-A' ])
+  dndsout.cmsa = dndscv(dndscv_muts.cmsa, refdb =  dndscv_reference_data_path, cv = NULL)
+  
+  cmsa.selection <- dndsout.cmsa$sel_cv
+  cmsa.annot <- dndsout.cmsa$annotmuts
+  
+  dndscv_muts.cmsb <- dndscv_muts %>% filter(sampleID %in% predicted.w.score$Sample[predicted.w.score$rna_class == 'CCS-B' ])
+  dndsout.cmsb = dndscv(dndscv_muts.cmsb, refdb =  dndscv_reference_data_path, cv = NULL)
+  
+  cmsb.selection <- dndsout.cmsb$sel_cv
+  
+  cmsa.genes <- cmsa.selection %>% dplyr::select(gene_name, qglobal_cv)
+  names(cmsa.genes)[2] <- 'ccsa'
+  cmsb.genes <- cmsb.selection %>% dplyr::select(gene_name, qglobal_cv)
+  names(cmsb.genes)[2] <- 'ccsb'
+  cms.genes <- full_join(cmsa.genes, cmsb.genes, by=c('gene_name'='gene_name'))
+  
+  #these are p-values so we want smaller for class assignment
+  cms.genes$type <- NA
+  cms.genes$type[cms.genes$ccsa < cms.genes$ccsb] <- 'CCS-A'
+  cms.genes$type[cms.genes$ccsa > cms.genes$ccsb] <- 'CCS-B'
+  
+  cms.drivers.pvalues.plot <- 
+    ggplot(cms.genes  %>% filter(gene_name %ni% c('USP8','MN1','PTH2') & (ccsa < 0.99 | ccsb < 0.99)), aes(x=-log(ccsa), y=-log(ccsb))) +
+    geom_abline(color='grey80',intercept = -log(0.05), slope=-1, linetype='dotted')+
+    geom_label_repel(aes(label=gene_name),  
+                     data = ~ subset(., ccsa < 0.05 | ccsb < 0.05  ), size=3, max.overlaps =20,
+                     box.padding = 0.75, force = 0.25, label.padding = 0.1, 
+                     max.time = 3,  min.segment.length = 0) +
+    geom_point(aes(color=type), size=3) +
+    
+    scale_color_manual(  values=c(
+      "CCS-B"    = "#EDA71A" , 
+      "CCS-A" = "#04597C" 
+    )) + theme_bw(base_size=10)+
+    theme(panel.background = element_blank(), 
+          plot.margin = unit(c(0, 0, 0, 0), "mm"),
+          panel.grid = element_blank(), 
+          plot.background = element_blank()) +
+    labs(x='',y='', title=cohort) + guides(color='none')+ 
+    
+    labs(y="CCS-B (log q)",x="CCS-A (log q)")
+  
+  return(cms.drivers.pvalues.plot)
+  
+}
+
+filter_and_annotate_centromeres <- function(scores.gistic, centromeres, manual_filter_file, MIN_PEAK_AMPLITUDE = 10, MIN_SIZE_FROM_CENTROMERE = 5000000){
+  REMOVE_THESE_CHROMOSOMES = c("X","Y")
+  
+  manually_remove_gistic <- fread(manual_filter_file)
+  
+  for(this_row_index in c(1:nrow(scores.gistic))){
+    this_chr <- scores.gistic$Chromosome[this_row_index]
+    
+    if(scores.gistic$minus_log_qvalue[this_row_index] > MIN_PEAK_AMPLITUDE ){
+      
+      
+      this_centromere_pos <- centromeres$V2[centromeres$V1 == this_chr]
+      
+      cat("checking peak on ", this_chr, "\n")
+      
+      if(abs(scores.gistic$Start[this_row_index] - this_centromere_pos) < MIN_SIZE_FROM_CENTROMERE){
+        scores.gistic$minus_log_qvalue[this_row_index] <- 0
+        cat("removing peak on ", this_chr, " within ", abs(scores.gistic$Start[this_row_index] - this_centromere_pos), "\n")
+        
+      }
+      
+      
+      
+    }
+    for(manual_region_index in c(1:nrow(manually_remove_gistic))){
+      if(manually_remove_gistic$V2[manual_region_index] == paste0('chr',this_chr)){
+        if(scores.gistic$Start[this_row_index] <= (manually_remove_gistic$V4[manual_region_index] ) & 
+           scores.gistic$End[this_row_index] >= (manually_remove_gistic$V3[manual_region_index] )
+        ){
+          scores.gistic$minus_log_qvalue[this_row_index] <- 0
+        }
+      }
+    }
+    
+    
+  }
+  
+  centromeres <- centromeres[centromeres$V1 %ni% REMOVE_THESE_CHROMOSOMES,]
+  centromeres$holder <- NA
+  centromeres$Type <- "Cent"
+  centromeres_rearr <- centromeres[,c("Type", "V1", "V2", "V2", "holder", "holder", "holder", "holder", "holder")]
+  names(centromeres_rearr) <- names(scores.gistic)
+  
+  scores.gistic <- rbind.data.frame(scores.gistic, centromeres_rearr)
+  scores.gistic$cent[scores.gistic$Type == "Cent"] <- T
+  return(scores.gistic)
+}
+
+get_cn_tpm_correlations <- function(this_gene, BTC.cnv.matrix, cnv.gene_list, all_rna, rna.gene_list ){
+  
+  cnv.tpm <- make_cn_tpm_table(this_gene, BTC.cnv.matrix, cnv.gene_list, all_rna, rna.gene_list)
+  
+  this.lm <- lm( tpm ~  cnv , cnv.tpm)
+  this.lm <- summary(this.lm)
+  
+  if(Inf %in% log(cnv.tpm$cnv) | -Inf %in% log(cnv.tpm$cnv)){
+    log.lm.p.coefficient = NA
+    log.lm.r = NA
+  } else {
+    this.log.lm <- lm( tpm ~  log(cnv) , cnv.tpm)
+    this.log.lm <- summary(this.log.lm)
+    log.lm.p.coefficient = this.log.lm$coefficients[[8]]
+    log.lm.r = this.log.lm$adj.r.squared
+  }
+  
+  this.corr <- cor.test(x=cnv.tpm$cnv, y=cnv.tpm$tpm, method = 'spearman')
+  
+  this.tmp.rel <- cbind.data.frame('gene'=this_gene, 
+                                   'lm.p'=this.lm$coefficients[[8]], 
+                                   'lm.r2'=this.lm$adj.r.squared, 
+                                   'log.lm.p'= log.lm.p.coefficient,
+                                   'log.lm.r2'= log.lm.r,
+                                   'sr.p' = this.corr$p.value,
+                                   'sr.rho' = this.corr$estimate
+  )
+  return(this.tmp.rel)
+}
+
+get_dnds_sig_genes <- function(sel_cv, dnds_cutoff = 0.1, INDELS_BOOLEAN = T){
+  
+  if(INDELS_BOOLEAN){
+    #only with indels
+    signif_genes = sel_cv[sel_cv$qglobal_cv<dnds_cutoff, c("gene_name","qglobal_cv")]
+    rownames(signif_genes) = NULL
+  }else{
+    
+    signif_genes = sel_cv[sel_cv$qallsubs_cv<dnds_cutoff, c("gene_name","qallsubs_cv")]
+    rownames(signif_genes) = NULL
+  }
+  return(signif_genes)
+}
+
 get_maxmin_from_splits <- function(cn_string_vec, maxmin) {
   max_vec <- c()
   #need to convert to character otherwise vecs where all are numeric come in as numeric
@@ -162,20 +207,22 @@ get_maxmin_from_splits <- function(cn_string_vec, maxmin) {
   return(max_vec)
 }
 
-get_dnds_sig_genes <- function(sel_cv, dnds_cutoff = 0.1, INDELS_BOOLEAN = T){
+make_cn_tpm_table <- function(this_gene, BTC.cnv.matrix, cnv.gene_list, all_rna, rna.gene_list){
+  cnv_named <-  cbind.data.frame(
+    'tumour' = names(BTC.cnv.matrix),
+    'cnv' = unlist(BTC.cnv.matrix[cnv.gene_list == this_gene,]),
+    'cnv.rank'= rank(BTC.cnv.matrix[cnv.gene_list == this_gene,])
+  )
   
-  if(INDELS_BOOLEAN){
-    #only with indels
-    signif_genes = sel_cv[sel_cv$qglobal_cv<dnds_cutoff, c("gene_name","qglobal_cv")]
-    rownames(signif_genes) = NULL
-  }else{
-    
-    signif_genes = sel_cv[sel_cv$qallsubs_cv<dnds_cutoff, c("gene_name","qallsubs_cv")]
-    rownames(signif_genes) = NULL
-  }
-  return(signif_genes)
+  tpm_named <-  cbind.data.frame(
+    'tumour' = names(all_rna),
+    'tpm'= unlist(all_rna[rna.gene_list == this_gene,]),
+    'tpm.rank'= rank(all_rna[rna.gene_list == this_gene,])
+  )
+  
+  cnv.tpm <- inner_join(cnv_named, tpm_named, by=c('tumour'='tumour'))
+  return(cnv.tpm)
 }
-
 
 pull_clonality <- function(these_dnds_annotation, work_dir_from_local='/Volumes/pcsi/users/fbeaudry/bunch_o_vcfs/'){
   require(tidyr)

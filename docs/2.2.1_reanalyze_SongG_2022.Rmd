@@ -5,6 +5,7 @@ scRNA re-analysis of [Song G. et al. 2022](https://doi.org/10.1038/s41467-022-29
 These data can be accessed by connecting with the authors of that manuscript. We thank Dr. Guohe Song for giving us access.
 
 ```{r}
+suppressWarnings(
 suppressPackageStartupMessages({
 
 library(dplyr)
@@ -23,25 +24,26 @@ library(cowplot)
 library(gghalves)
   
 })
+)
 
 packageVersion('Seurat')
 packageVersion('AUCell')
 
 '%ni%' <- function(x,y)!('%in%'(x,y))
 
-basedir = '~/Documents/scripts/github/btc-ccs/'
-secdir = '~/Documents/scripts/github/evolution/'
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
 
-source(paste0(basedir,"/bin/BTC.functions.R"))
-source(paste0(basedir,"/bin/scrna_fxn.R"))
+source(paste0(code.dir,"/bin/BTC.functions.R"))
+source(paste0(code.dir,"/bin/scrna_fxn.R"))
 
 this.cohort = 'song_2022'
-main_dir <- file.path(secdir, '/source_data/scrna/',this.cohort)
+main_dir <- file.path(data.dir, '/source_data/scrna/',this.cohort)
 setwd(main_dir)
 
 save.ind.nonepi = F
 if(save.ind.nonepi){
-  noepi <- readRDS(file.path(secdir,'source_data/scrna/song_2022/nonepi.rds'))
+  noepi <- readRDS(file.path(data.dir,'source_data/scrna/song_2022/nonepi.rds'))
   no.epi.tumours <- unique(noepi@meta.data[,'orig.ident'])[grepl("T$", unique(noepi@meta.data[,'orig.ident']))]
   
   for(this.sample in no.epi.tumours){
@@ -51,20 +53,22 @@ if(save.ind.nonepi){
     noepi.sub <- SCTransform(noepi.sub, verbose = FALSE, method = "glmGamPoi")
     noepi.sub$cellmeta <- 'noepi'
     
-    if (!dir.exists(paste0("./infercnv/",this.sample))) {
-      dir.create(paste0("./infercnv/",this.sample), recursive = T)
+    if (!dir.exists(paste0(data.dir,'source_data/scrna/song_2022/infercnv/',this.sample))) {
+      dir.create(paste0(data.dir,'source_data/scrna/song_2022/infercnv/',this.sample), recursive = T)
     }
     
-    saveRDS(noepi.sub, paste0("./infercnv/",this.sample,'/nonepi.',this.sample,'.rds'))
+    saveRDS(noepi.sub, paste0(data.dir,'source_data/scrna/song_2022/infercnv/',this.sample,'/nonepi.',this.sample,'.rds'))
   
   }
 }
 
-song.epi <- readRDS(file.path(secdir,'/source_data/scrna/song_2022/epi.rds'))
+song.epi <- readRDS(file.path(data.dir,'/source_data/scrna/song_2022/epi.rds'))
 
 song.epi <- SCTransform(song.epi, verbose = FALSE)
+#I19T makes everything crash
 song.epi <- subset(song.epi, subset = orig.ident %in% c('I02T', 'I03T', 'I04T', 'I06T', 'I09T', 'I10T', 
-                                                                 'I12T', 'I13T', 'I14T', 'I15T',  'I16T', 'I17T', 'I18T')) 
+                                                        'I12T', 'I13T', 'I14T', 'I15T',  'I16T', 'I17T', 'I18T')) 
+
 
 
 ```
@@ -89,17 +93,17 @@ We are mostly interested in the scRNA data because NMF decomposition does not ne
 
 ```{r}
 
-y_order.convert <- fread( file.path(basedir,'/results/NMF.conversion.txt' ))
+y_order.convert <- fread( file.path(data.dir,'/results/whole.NMF.conversion.txt' ))
 y_order.convert$og <- gsub('sig','V', y_order.convert$og)
 
-w.matrix <- read.csv(file.path(basedir,'/results/W_matrix.txt'), row.names= 1)
+w.matrix <- read.csv(file.path(data.dir,'/results/whole.W_matrix.txt'), row.names= 1)
 genes <- row.names(w.matrix)
 w.matrix <- w.matrix %>% dplyr::select(all_of(y_order.convert$og))
 names(w.matrix) <- y_order.convert$new
 w.matrix <- as.matrix(w.matrix)
 row.names(w.matrix) <- genes
 
-gene_set <- fread(file.path(basedir,'/source_data/fgs.txt'))
+gene_set <- fread(file.path(data.dir,'/source_data/fgs.txt'))
 tpm_data <- convert_w_to_tpm_like(w.matrix, gene_set)
 gene_sets <- make_gene_sets(tpm_data, ntile=0.9)
 
@@ -166,24 +170,10 @@ centroids <- df %>%
     y_centroid = median(umap_2)
   )
 
-color.set <- c(
-  'sig.1' = 'grey30',
-  'sig.7' = 'black',
-  
-  
-  'sig.2' = 'lightblue',
-  'sig.6' = 'cornflowerblue',
-  
-  'sig.5' = "forestgreen" ,
-  'sig.8' = '#0A6F99' ,               #"#04597C" ,
-  
-  'sig.3' = 'yellow',
-  'sig.4' = '#D98E04'            #"#EDA71A"
-  
-  
-)
+color.set <-    pnw_palette(name="Sailboat", n=8 )
+names(color.set) <- paste0('sig.',c(8:1))
 
-ggplot(df, aes(x = umap_1, y = umap_2)) +
+ggplot(df , aes(x = umap_1, y = umap_2)) +
   
   geom_point(size=0.5, aes(color = Top_NMF)) +
   geom_label_repel(data = centroids, aes(x = x_centroid, y = y_centroid, label = donor), 
@@ -194,7 +184,7 @@ ggplot(df, aes(x = umap_1, y = umap_2)) +
                      
                      
   ) + 
-  #  scale_fill_manual(values =  pnw_palette(name="Bay", n=12 ) ) + 
+
   theme(
     panel.border = element_blank(),
     plot.margin = margin(t = 0, r = 0, b = 0, l = 0),
@@ -219,20 +209,20 @@ if(run.infercnv){
   '%ni%' <- function(x,y)!('%in%'(x,y))
   options(scipen = 100)
   
-  all_genes <- fread(file.path(basedir,'/source_data/fgs.txt'))
+  all_genes <- fread(file.path(data.dir,'/source_data/fgs.txt'))
   
 
   song.epi$cellmeta <- 'epi'
   
   these.samples <- unique(song.epi$orig.ident)
-  these.samples <- c('I19T')
+  #these.samples <- c('I19T')
   
   for(this.sample in these.samples){
     
     seurat_list <- list()
     
     seurat_list[['epi']] <- subset(song.epi, subset = orig.ident == this.sample) 
-    seurat_list[['noepi']] <- readRDS(paste0(basedir,'/source_data/scrna/song_2022/infercnv/',this.sample,'/nonepi.',this.sample,'.rds'))
+    seurat_list[['noepi']] <- readRDS(paste0(data.dir,'/source_data/scrna/song_2022/infercnv/',this.sample,'/nonepi.',this.sample,'.rds'))
     
     features <- SelectIntegrationFeatures(seurat_list, nfeatures = 2000) # adjust number of features as needed
     
@@ -264,7 +254,7 @@ if(run.infercnv){
       Group = combined$cellmeta
     )
     
-    write.table(annotations, paste0("./infercnv/",this.sample,"/cellAnnotations.txt"), 
+    write.table(annotations, paste0(data.dir,'/source_data/scrna/song_2022/infercnv/',this.sample,"/cellAnnotations.txt"), 
                 sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
     
     gene_names <-  data.frame('gene_name'=rownames(combined@assays$RNA))
@@ -274,23 +264,23 @@ if(run.infercnv){
     
     gene_names <- gene_names %>% filter(gene_name %ni% duplicate.genes$gene_name & !is.na(Chr) & Chr < 23) %>% arrange(Chr, Start,   End)
     
-    write.table(gene_names, paste0("./infercnv/",this.sample,"/geneAnnotations.txt"), sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+    write.table(gene_names, paste0(data.dir,'/source_data/scrna/song_2022/infercnv/',this.sample,"/geneAnnotations.txt"), sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
     
     combined <- subset(combined, features = gene_names$gene_name)
     
     count_mat <- combined@assays$RNA$counts
     
     infercnv.obj <- CreateInfercnvObject(raw_counts_matrix = count_mat,
-                                         annotations_file = paste0("./infercnv/",this.sample,"/cellAnnotations.txt"),
+                                         annotations_file = paste0(data.dir,'/source_data/scrna/song_2022/infercnv/',this.sample,"/cellAnnotations.txt"),
                                          delim = "\t",
                                          ref_group_names = ref_group_names ,
-                                         gene_order_file = paste0("./infercnv/",this.sample,"/geneAnnotations.txt")
+                                         gene_order_file = paste0(data.dir,'/source_data/scrna/song_2022/infercnv/',this.sample,"/geneAnnotations.txt")
     )
     
     infercnv.res <- infercnv::run(infercnv.obj,
                                   # noise_filter = 0.2,  
                                   # cutoff=0.5,
-                                  out_dir=paste0("./infercnv/",this.sample,"/output/"),
+                                  out_dir=paste0(data.dir,'/source_data/scrna/song_2022/infercnv/',this.sample,"/output/"),
                                   cluster_by_groups=TRUE,
                                   denoise=TRUE,  
                                   write_expr_matrix = T,
@@ -302,7 +292,7 @@ if(run.infercnv){
     cnv_matrix <- data.frame(infercnv.res@expr.data)
     
     write.table( cnv_matrix,  
-                 file = paste0("./infercnv/",this.sample,"/",this.sample,'.cnv_matrix.tsv'), 
+                 file = paste0(data.dir,'/source_data/scrna/song_2022/infercnv/',this.sample,"/",this.sample,'.cnv_matrix.tsv'), 
                  row.names = T,col.names = T, quote = FALSE, sep = "\t", append =F)
     
   }
@@ -315,7 +305,7 @@ We use our gCCS model to predict the CCS of individual cells form the CNV profil
 
 ```{r}
 
-cytoBand <- fread(file.path(basedir,'/source_data/cytoBand.txt'), na.strings = '') %>% 
+cytoBand <- fread(file.path(data.dir,'/source_data/cytoBand.txt'), na.strings = '') %>% 
   filter(!is.na(Chromosome))
 
 
@@ -329,12 +319,12 @@ cytoBand <- cytoBand %>%
   ) %>%
   dplyr::select(-parts) %>% filter(!is.na(arm) & arm %ni% c('Xq','Xp','Yp','Yq'))
 
-full_cnv_model <- readRDS(file.path(basedir,'/results/cnv.model.rds'))
+full_cnv_model <- readRDS(file.path(data.dir,'/results/cnv.model.rds'))
 
 first.sample = T
 for(this.sample in unique(song.epi$orig.ident) ){
   
-  infercnv.path <- paste0(secdir,"/source_data/scrna/song_2022/infercnv/",this.sample,"/",this.sample,'.cnv_matrix.tsv')
+  infercnv.path <- paste0(data.dir,"/source_data/scrna/song_2022/infercnv/",this.sample,"/",this.sample,'.cnv_matrix.tsv')
   
   if(file.exists(infercnv.path)){
     
@@ -406,11 +396,11 @@ ggplot(df.cnv , aes(x=cnv_scores, fill=Top_NMF)) +
   ) 
 
 
-THRESHOLD = 0.34
+THRESHOLD = 0.5
 
 df.cnv$gCMS <- NA
-df.cnv$gCMS[df.cnv$prob > 0.8 ] <- 'CMS-A'
-df.cnv$gCMS[df.cnv$prob < 0.2 ] <- 'CMS-B'
+df.cnv$gCMS[df.cnv$prob > 0.8 ] <- 'CCS-A'
+df.cnv$gCMS[df.cnv$prob < 0.2 ] <- 'CCS-B'
 
 ggplot(df.cnv %>% filter(!is.na(donor)), aes(x=prob, fill=Top_NMF)) +
   facet_grid(donor~., scales='free') +
@@ -443,7 +433,9 @@ The TSP algorithm did not function at single cell resolution from high drop-out 
 
 tumour.subset_obj <- subset(song.epi, cells = df.cnv.filt$barcode) 
 
-whole.estimate <- get_cms_from_pseudobulk(tumour.subset_obj, grouping_var = "orig.ident")
+whole.estimate <- get_cms_from_pseudobulk(tumour.subset_obj, grouping_var = "orig.ident", 
+                                    basedir = '~/Documents/scripts/github/btc-ccs-data/')
+
 whole.estimate$sample_id <- rownames(whole.estimate)
 
 meta <- tumour.subset_obj@meta.data
@@ -463,7 +455,8 @@ for(this.boot in c(1:100)){
   boot.subset <- subset(tumour.subset_obj, cells = sampled_cells)
   
   suppressMessages(
-    boot.estimate <- get_cms_from_pseudobulk(boot.subset, grouping_var = "orig.ident")
+    boot.estimate <- get_cms_from_pseudobulk(boot.subset, grouping_var = "orig.ident", 
+                                    basedir = '~/Documents/scripts/github/btc-ccs-data/')
   )
   
   boot.estimate$sample_id <- rownames(boot.estimate)
@@ -510,11 +503,11 @@ ggplot(tsp.confidence , aes(x=Donor,  color=rna_class)) +
   
   theme_bw(base_size=10) +scale_color_manual(values =  
                                                c(
-                                                 "CMS-A"="#04597C", "CMS-B"="#EDA71A"
+                                                 "CCS-A"="#04597C", "CCS-B"="#EDA71A"
                                                  
                                                  
                                                ), na.value = 'grey'
-  ) +labs(y='% of TSP for CMS-A')+ theme(panel.grid = element_blank(), 
+  ) +labs(y='% of TSP for CCS-A')+ theme(panel.grid = element_blank(), 
                                          axis.ticks.x = element_blank(),
                                          axis.title.x = element_blank(),
                                          axis.text.x = element_blank(),
@@ -594,8 +587,8 @@ tumour.cnv.model.arms %>%
 
 
 tumour.cnv.model.arms$eCMS <- NA
-tumour.cnv.model.arms$eCMS[tumour.cnv.model.arms$donor %in% tsp.confidence$Donor[tsp.confidence$rna_class == 'CMS-A']] <- 'CMS-A'
-tumour.cnv.model.arms$eCMS[tumour.cnv.model.arms$donor %in% tsp.confidence$Donor[tsp.confidence$rna_class == 'CMS-B']] <- 'CMS-B'
+tumour.cnv.model.arms$eCMS[tumour.cnv.model.arms$donor %in% tsp.confidence$Donor[tsp.confidence$rna_class == 'CCS-A']] <- 'CCS-A'
+tumour.cnv.model.arms$eCMS[tumour.cnv.model.arms$donor %in% tsp.confidence$Donor[tsp.confidence$rna_class == 'CCS-B']] <- 'CCS-B'
 
 
 tumour.cnv.model.arms.match <- tumour.cnv.model.arms %>% filter(!is.na(eCMS) & !is.na(gCMS)) #filter(eCMS == gCMS)
@@ -606,12 +599,12 @@ tumour.cnv.model.arms.match$Donor <- factor(tumour.cnv.model.arms.match$donor, l
 
 df.cms.n.filt <- df.cms %>% filter(barcode %in% tumour.cnv.model.arms.match$barcode) %>% 
   group_by(Donor, condition, rna_class, confidence.polarized, Top_NMF, gCMS) %>% tally() 
-df.cms.n.filt$n[df.cms.n.filt$gCMS == 'CMS-A'] <- -df.cms.n.filt$n[df.cms.n.filt$gCMS == 'CMS-A']
+df.cms.n.filt$n[df.cms.n.filt$gCMS == 'CCS-B'] <- -df.cms.n.filt$n[df.cms.n.filt$gCMS == 'CCS-B']
 
 df.cms.n.filt$esig <- factor(df.cms.n.filt$Top_NMF, levels = paste0('sig.',c(1:10)))
 
 
-df.cms.n.filt$gCMS.f <- factor(paste0('g',df.cms.n.filt$gCMS), levels = rev(c('gCMS-A','gCMS-B')))
+df.cms.n.filt$gCMS.f <- factor(paste0('g',df.cms.n.filt$gCMS), levels = rev(c('gCCS-B','gCCS-A')))
 
 
 
@@ -621,8 +614,8 @@ nmf.tally.gCMS.plot <-
           
            ggplot(tsp.confidence %>% filter(Donor %in% df.cms.n.filt$Donor), aes(x=Donor,  color=rna_class)) + 
              
-             geom_hline(yintercept = 80, color='grey', linetype='dotted')+
-             geom_hline(yintercept = 20, color='grey', linetype='dotted')+
+             geom_hline(yintercept = (10/16)*100, color='grey', linetype='dotted')+
+             geom_hline(yintercept = (6/16)*100, color='grey', linetype='dotted')+
              
              geom_errorbar(aes(ymin = ci_low*100, ymax = ci_high*100), width = 0.2)  +
              
@@ -633,11 +626,11 @@ nmf.tally.gCMS.plot <-
              
              theme_bw(base_size=10) +scale_color_manual(values =  
                                                           c(
-                                                            "CMS-A"="#04597C", "CMS-B"="#EDA71A"
+                                                            "CCS-A"="#04597C", "CCS-B"="#EDA71A"
                                                             
                                                             
                                                           ), na.value = 'grey'
-             ) +labs(y='% of TSP')+ theme(panel.grid = element_blank(), 
+             ) +labs(y='% of TSP\nin pseudobulk')+ theme(panel.grid = element_blank(), 
                                                      axis.ticks.x = element_blank(),
                                                      axis.title.x = element_blank(),
                                                      axis.text.x = element_blank(),
@@ -675,6 +668,7 @@ nmf.tally.gCMS.plot <-
                    strip.background = element_blank()
              )+ labs(y='n cells')+
              guides(color='none',fill='none')+
+             scale_y_continuous(breaks=c(-800,-400,0,400,800),labels = c(800,400,0,400,800)) +
              scale_fill_manual(values =  
                                  color.set, na.value = 'grey'
              )
@@ -683,7 +677,7 @@ nmf.tally.gCMS.plot <-
        
 nmf.tally.gCMS.plot
 
-ggsave(file.path(basedir, "/results/fig/FIG3h.nmf.tally.gCMS.svg"), plot = 
+ggsave(file.path(data.dir, "/results/fig/FIG3i.nmf.tally.gCMS.svg"), plot = 
          nmf.tally.gCMS.plot
        , device = "svg", height = 65,width = 65, units = 'mm', dpi=72 )
 

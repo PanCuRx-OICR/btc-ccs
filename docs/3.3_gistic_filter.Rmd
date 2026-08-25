@@ -4,7 +4,7 @@ We've made some non-traditional choices in analyzing our copy number variants. F
 ## pull data
 
 ```{r}
-
+suppressWarnings(
 suppressPackageStartupMessages({
 
 library(CNTools)
@@ -15,21 +15,21 @@ library(minpack.lm)
 library(ggrepel)
 library(ggforce)
   
-})
+}))
 
 packageVersion('CNTools')
 
 '%ni%' <- function(x,y)!('%in%'(x,y))
 
-basedir = '~/Documents/scripts/github/btc-ccs/'
-secdir = '~/Documents/scripts/github/evolution/'
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
 
-source(paste0(basedir,"/bin/BTC.functions.R"))
-source(paste0(basedir,"/bin/driver_functions.R"))
-source(paste0(basedir,"/bin/integrated_driver.functions.R"))
+source(paste0(code.dir,"/bin/BTC.functions.R"))
+source(paste0(code.dir,"/bin/driver_functions.R"))
+source(paste0(code.dir,"/bin/integrated_driver.functions.R"))
 
 # setup genes
-gene_set <- fread(file.path(basedir,'/source_data/fgs.txt'))
+gene_set <- fread(file.path(data.dir,'/source_data/fgs.txt'))
 gene_set$Chr <- paste0('chr',gene_set$Chr)
 
 genebed <- gene_set %>% filter(biotype=="protein_coding" & Length >= 500 & Chr %in% paste0('chr',c(1:22))) %>%
@@ -37,11 +37,10 @@ genebed <- gene_set %>% filter(biotype=="protein_coding" & Length >= 500 & Chr %
   
 names(genebed) <- c('chrom',	'start',	'end',	'geneid',	'genename')
 
-cancerGeneList <- fread(file.path(basedir,'/source_data/cancerGeneList.tsv'))
+cancerGeneList <- fread(file.path(data.dir,'/source_data/cancerGeneList.tsv'))
 
 # setup samples
-predicted.w.score <- fread(file.path(basedir,'/results/all.eCMS.txt') )
-predicted.w.score <- predicted.w.score %>% filter(`Sample Source(FFPE, FF)` == 'FF')
+predicted.w.score <- fread(file.path(data.dir,'/results/all.eCCS.txt') )
 
 ```
 
@@ -49,62 +48,20 @@ predicted.w.score <- predicted.w.score %>% filter(`Sample Source(FFPE, FF)` == '
 
 ```{r}
 
-get.gistic.by.gene <- function(scores.gistic, genebed){
-  
-  scores.gistic <- scores.gistic %>% filter(Chromosome %ni% c(23:25))
-  
-  scores.gistic$Chromosome <- paste0('chr', scores.gistic$Chromosome)
-  scores.gistic$toy.marker <- 1
-  
-  gscores.gistic <- scores.gistic %>% dplyr::select(Type, Chromosome,Start,End,toy.marker, `G-score`)
-  names(gscores.gistic) <- c('ID','chrom','loc.start','loc.end','num.mark','seg.mean')
-  
-  cn.gistic.g <- CNSeg(gscores.gistic)
-  cn.gistic.g.gene <- getRS(cn.gistic.g, by="gene", imput=FALSE, XY=FALSE, geneMap=genebed, what="min")
-  cn.gistic.g.gene <- rs(cn.gistic.g.gene)
-  
-  cn.gistic.g.gene.melt <- cn.gistic.g.gene %>% reshape2::melt(id.vars=c('chrom','start','end','geneid','genename'))
-  names(cn.gistic.g.gene.melt)[7] <- 'gvalue'
-  
-  cn.gistic.g.gene.melt$gflip <- cn.gistic.g.gene.melt$gvalue
-  cn.gistic.g.gene.melt$gflip[cn.gistic.g.gene.melt$variable == 'Del'] <- -cn.gistic.g.gene.melt$gflip[cn.gistic.g.gene.melt$variable == 'Del']
-  
-  ## p 
 
-  pvalue.gistic <- scores.gistic %>% dplyr::select(Type, Chromosome,Start,End,toy.marker, `-log10(q-value)`)
-
-  names(pvalue.gistic) <- c('ID','chrom','loc.start','loc.end','num.mark','seg.mean')
-  
-  cn.gistic.p <- CNSeg(pvalue.gistic)
-  cn.gistic.p.gene <- getRS(cn.gistic.p, by="gene", imput=FALSE, XY=FALSE, geneMap=genebed, what="min")
-  cn.gistic.p.gene <- rs(cn.gistic.p.gene)
-  
-  cn.gistic.p.gene.melt <- cn.gistic.p.gene %>% reshape2::melt(id.vars=c('chrom','start','end','geneid','genename'))
-  names(cn.gistic.p.gene.melt)[7] <- 'pvalue'
-
-  cn.gistic.p.gene.melt$pflip <- cn.gistic.p.gene.melt$pvalue
-  cn.gistic.p.gene.melt$pflip[cn.gistic.p.gene.melt$variable == 'Del'] <- -cn.gistic.p.gene.melt$pflip[cn.gistic.p.gene.melt$variable == 'Del']
-  
-  cn.gistic.gene.melt <- full_join(cn.gistic.g.gene.melt, cn.gistic.p.gene.melt, by=c('chrom'='chrom','start'='start','end'='end','geneid'='geneid','genename'='genename','variable'='variable'))
-  cn.gistic.gene.melt$type.f <- factor(cn.gistic.gene.melt$variable, levels=c('Amp','Del'))
-  cn.gistic.gene.melt$Chrom <- as.numeric(gsub('chr','',cn.gistic.gene.melt$chrom))
-  
-  return(cn.gistic.gene.melt)
-}
-
-scores.gistic.raw <- fread(file.path(basedir,'/results/scores.gistic.all.txt'))
+scores.gistic.raw <- fread(file.path(data.dir,'/results/scores.gistic.all.txt'))
 
 cn.gistic.gene.melt <- get.gistic.by.gene(scores.gistic=scores.gistic.raw, genebed=genebed)
 cn.gistic.gene.melt$cms <- 'all'
 
 
-scores.gistic.hep <- fread(file.path(basedir,'/results/scores.gistic.cmsa.txt'))
+scores.gistic.hep <- fread(file.path(data.dir,'/results/scores.gistic.ccsa.txt'))
 cn.gistic.gene.melt.cmsa <- get.gistic.by.gene(scores.gistic.hep, genebed=genebed)
-cn.gistic.gene.melt.cmsa$cms <- 'cmsa'
+cn.gistic.gene.melt.cmsa$cms <- 'ccsa'
 
-scores.gistic.ehc <- fread(file.path(basedir,'/results/scores.gistic.cmsb.txt'))
+scores.gistic.ehc <- fread(file.path(data.dir,'/results/scores.gistic.ccsb.txt'))
 cn.gistic.gene.melt.cmsb <- get.gistic.by.gene(scores.gistic.ehc, genebed=genebed)
-cn.gistic.gene.melt.cmsb$cms <- 'cmsb'
+cn.gistic.gene.melt.cmsb$cms <- 'ccsb'
 
 scores.gistic <- rbind.data.frame(cn.gistic.gene.melt, cn.gistic.gene.melt.cmsa, cn.gistic.gene.melt.cmsb)
 
@@ -114,9 +71,9 @@ scores.gistic <- rbind.data.frame(cn.gistic.gene.melt, cn.gistic.gene.melt.cmsa,
       facet_grid(type.f~as.numeric(Chrom), scales="free" ,space="free" ) + 
         
       geom_line(aes(x = start/10000000 , y = pflip, color = cms),
-                data = ~ subset(., cms %in% c('cmsb','cmsa') & type.f == 'Del')) +
+                data = ~ subset(., cms %in% c('ccsb','ccsa') & type.f == 'Del')) +
       geom_line(aes(x = start/10000000 , y = pflip, color = cms),
-                data = ~ subset(., cms %in% c('cmsb','cmsa') & type.f == 'Amp')) + 
+                data = ~ subset(., cms %in% c('ccsb','ccsa') & type.f == 'Amp')) + 
       geom_area(aes(x = start/10000000 , y = pflip,  fill = type.f), alpha=0.25,
                 data = ~ subset(., cms %in% c('all'))) + 
       
@@ -124,8 +81,8 @@ scores.gistic <- rbind.data.frame(cn.gistic.gene.melt, cn.gistic.gene.melt.cmsa,
       
       scale_alpha_manual(values = c(0.1)) +
         scale_color_manual(values = c(
-          "cmsb"    = "#EDA71A" , 
-          "cmsa" = "#04597C" 
+          "ccsb"    = "#EDA71A" , 
+          "ccsa" = "#04597C" 
         ))  +  scale_fill_manual(values=c("grey40", "grey40","grey40")) +
       
       scale_y_continuous(breaks = c(-10,0,10)) +
@@ -155,31 +112,31 @@ scores.gistic <- rbind.data.frame(cn.gistic.gene.melt, cn.gistic.gene.melt.cmsa,
 
 ```{r}
 
-all_lesions.conf_90 <- fread(file.path(basedir,'/results/all_lesions.conf_90.all.txt'))
+all_lesions.conf_90 <- fread(file.path(data.dir,'/results/all_lesions.conf_90.all.txt'))
 all.binned.change <- all_lesions.conf_90 %>% filter( `Amplitude Threshold` != 'Actual Copy Change Given')
 all.binned.change.sub <- all.binned.change[,c(1:9)]
 all.binned.change.sub$CMS <- 'all'
 
-cmsa_lesions.conf_90 <- fread(file.path(basedir,'/results/all_lesions.conf_90.cmsa.txt'))
+cmsa_lesions.conf_90 <- fread(file.path(data.dir,'/results/all_lesions.conf_90.ccsa.txt'))
 cmsa.binned.change <- cmsa_lesions.conf_90 %>% filter( `Amplitude Threshold` != 'Actual Copy Change Given')
 cmsa.binned.change.sub <- cmsa.binned.change[,c(1:9)]
-cmsa.binned.change.sub$CMS <- 'cmsa'
+cmsa.binned.change.sub$CMS <- 'ccsa'
 
-cmsb_lesions.conf_90 <- fread(file.path(basedir,'/results/all_lesions.conf_90.cmsb.txt'))
+cmsb_lesions.conf_90 <- fread(file.path(data.dir,'/results/all_lesions.conf_90.ccsb.txt'))
 cmsb.binned.change <- cmsb_lesions.conf_90 %>% filter( `Amplitude Threshold` != 'Actual Copy Change Given')
 cmsb.binned.change.sub <- cmsb.binned.change[,c(1:9)]
-cmsb.binned.change.sub$CMS <- 'cmsb'
+cmsb.binned.change.sub$CMS <- 'ccsb'
 
 binned.change <- rbind.data.frame(all.binned.change.sub, cmsa.binned.change.sub, cmsb.binned.change.sub)
 
-all_rna_raw <- fread(file.path(basedir,'/results/rna.tpm.ff.txt'), header = T)
+all_rna_raw <- fread(file.path(data.dir,'/results/rna.tpm.ff.txt'), header = T)
 
-key_tumour_features <- fread(file.path( basedir,'/source_data/BTC_clinical.tumours.tsv'), header = T)
-ff_tumours <- na.omit(key_tumour_features$Sample[key_tumour_features$`Sample Source(FFPE, FF)` == 'FF' ])
+#key_tumour_features <- fread(file.path( basedir,'/source_data/BTC_clinical.tumours.tsv'), header = T)
+#ff_tumours <- na.omit(key_tumour_features$Sample[key_tumour_features$`Sample Source(FFPE, FF)` == 'FF' ])
 
-ff.rna.tumours <- intersect(names(all_rna_raw), ff_tumours)
+#ff.rna.tumours <- intersect(names(all_rna_raw), ff_tumours)
 
-all_rna_raw <- all_rna_raw %>% dplyr::select(all_of(c('gene_name', ff.rna.tumours)))
+#all_rna_raw <- all_rna_raw %>% dplyr::select(all_of(c('gene_name', ff.rna.tumours)))
 names(all_rna_raw)[1] <- 'gene_list'
 
 ## this filter loops around peaks, and uses GISTIC gene list for RNA pulls
@@ -193,11 +150,11 @@ tpm_filter=T
 if(tpm_filter){
   
   first.peak =T
-  for(this.cms in c('all','cmsa','cmsb')){
+  for(this.cms in c('all','ccsa','ccsb')){
     cat(this.cms,'\n')
     
     type.binned.change <- binned.change[binned.change$CMS == this.cms,]
-    all_thresholded.by_genes <- fread(paste0(basedir,'/results/all_thresholded.by_genes.',this.cms,'.txt'))
+    all_thresholded.by_genes <- fread(paste0(data.dir,'/results/all_thresholded.by_genes.',this.cms,'.txt'))
     these.samples <- intersect(names(all_thresholded.by_genes),names(all_rna_raw))
     
     for(this.peak in type.binned.change$`Unique Name`){
@@ -307,12 +264,12 @@ if(tpm_filter){
     }
   }
   tpm.filtered.peaks <- unique(tpm.filtered.peaks)
-  write.table( tpm.filtered.peaks,  file = file.path(basedir,"/results/tpm.filtered.peaks.cms.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+  write.table( tpm.filtered.peaks,  file = file.path(data.dir,"/results/tpm.filtered.peaks.cms.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
 }
 
 ## Filter for known drivers
 
-tpm.filtered.peaks <- fread(file.path(basedir,"/results/tpm.filtered.peaks.cms.txt"))
+tpm.filtered.peaks <- fread(file.path(data.dir,"/results/tpm.filtered.peaks.cms.txt"))
 tpm.filtered.peaks <- left_join(tpm.filtered.peaks, cancerGeneList, by=c('gene'='Hugo Symbol'))
 
 ##fraction of peaks removed by filter
@@ -345,10 +302,12 @@ This rapidly gets a little overwhelming when trying to account for all the facto
 
 hits <- sort(c(unique(tpm.filtered.peaks.ann$gene)))
 
-all.cnv <- fread(file.path(secdir,"/results/all.cnv.txt"))
+all.cnv <- fread(file.path(data.dir,"/results/all.cnv.txt"))
 all.cnv$toy.marker <- 1
 all.cnv <- all.cnv %>% dplyr::select(sampleID, chrom,start.pos,end.pos,toy.marker, labels) %>% filter(!is.na(labels))
 names(all.cnv) <- c('ID','chrom','loc.start','loc.end','num.mark','seg.mean')
+
+
 
 allele.cn.seg <- CNSeg(all.cnv)
 allele.cn.gene <- getRS(allele.cn.seg, by="gene", imput=FALSE, XY=FALSE, geneMap=genebed, what="min")
@@ -359,7 +318,7 @@ cnv.allele.sum <- as.data.frame(apply(gene.allele.filt[,-c(1:5)] , c(1, 2), spli
 cnv.allele.sum <- cbind.data.frame(gene.allele.filt[,c(1,5)], cnv.allele.sum)
 
 ##importing ploidy
-cellularity <- fread(file.path(basedir,'/results/btc.cellularity.curated.txt'), col.names = c('tumor','cellularity','ploidy')) %>% filter(tumor %in% names(cnv.allele.sum)[-c(1:2)])
+cellularity <- fread(file.path(data.dir,'/results/btc.cellularity.curated.txt'), col.names = c('tumor','cellularity','ploidy')) %>% filter(tumor %in% names(cnv.allele.sum)[-c(1:2)])
 
 ploidy.cluster.model <- Mclust(cellularity$ploidy, G=2)
 cellularity$ploidy.class <- ploidy.cluster.model$classification
@@ -379,7 +338,7 @@ cellularity$ploidy.base[ploidy.bins$ploidy.bin == 'WGD'] <- 4
 
 write.table(
   cellularity,
-  file = paste0(basedir, "/results/cellularity.txt"),
+  file = paste0(data.dir, "/results/cellularity.txt"),
   row.names = FALSE, quote = FALSE, sep = "\t"
 )
 
@@ -389,12 +348,12 @@ parameterize.CNVs = T
 if(parameterize.CNVs){
   
   first.gene=T
-  for(this.cms in c('all','cmsa','cmsb')){
+  for(this.cms in c('all','ccsa','ccsb')){
     cat(this.cms,'\n')
     
     hits <- sort(c(unique(tpm.filtered.peaks.ann$gene[tpm.filtered.peaks.ann$CMS == this.cms])))
     
-    all_thresholded.by_genes <- fread(paste0(basedir,'/results/all_thresholded.by_genes.',this.cms,'.txt'))
+    all_thresholded.by_genes <- fread(paste0(data.dir,'/results/all_thresholded.by_genes.',this.cms,'.txt'))
     hits.gistic <- all_thresholded.by_genes %>% filter(`Gene Symbol` %in% hits)
     
     ploidy.sub <- cellularity %>% filter(tumor %in% names(all_thresholded.by_genes))
@@ -608,7 +567,7 @@ if(parameterize.CNVs){
       }
     }
     
-    write.table( cnv.tpm.fit,  file = paste0(basedir,"/results/cnv.tpm.",this.cms,".fit.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+    write.table( cnv.tpm.fit,  file = paste0(data.dir,"/results/cnv.tpm.",this.cms,".fit.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
     
     cnv.tpm.fit.filt <- cnv.tpm.fit %>% 
       #filter(  delta_aic > 0 & gistic.p > 0  ) %>% 
@@ -631,10 +590,10 @@ if(parameterize.CNVs){
       )%>% 
       arrange(cytoband, desc(delta_aic))
     
-    write.table( collapsed_df,  file = paste0(basedir,"/results/cnv.tpm.",this.cms,".fit.filt.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+    write.table( collapsed_df,  file = paste0(data.dir,"/results/cnv.tpm.",this.cms,".fit.filt.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
     
     cnv.calls.filt <- cnv.calls %>% filter(gene %in% cnv.tpm.fit.filt$gene ) 
-    write.table( cnv.calls.filt,  file = paste0(basedir,"/results/cnv.calls.",this.cms,".txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+    write.table( cnv.calls.filt,  file = paste0(data.dir,"/results/cnv.calls.",this.cms,".txt"), row.names = FALSE, quote = FALSE, sep = "\t")
   }
 }
 
@@ -649,9 +608,10 @@ With "drivers" we've identified from the TPM // CNV model, we re-plot GISTIC pro
 
 scores.gistic$Chrom <- as.numeric(gsub('chr','',scores.gistic$chrom))
 
-ALL_ONCOGENES = c('PBRM1','MYC','CDKN2A','ERBB2')
-cmsb_ONCOGENES = c('CCND1','MDM2','SMAD4','CCNE1','GATA6','CDK6')
-cmsa_ONCOGENES = c('IRF2','ERRFI1')
+ALL_ONCOGENES = c('MYC','CDKN2A','ERBB2')
+cmsa_ONCOGENES = c('IRF2','ERRFI1','BAP1')
+cmsb_ONCOGENES = c('CCND1','MDM2','SMAD4','CCNE1','CDK6')
+
 cnv.gistic.subtype <- 
   ggplot(scores.gistic, aes( x = start/10000000 , y = pflip)) +  
   
@@ -664,13 +624,13 @@ cnv.gistic.subtype <-
               data = ~ subset(., cms %in% c('all') ) ) +
     
     geom_line(aes(x = start/10000000 , y = pflip, color = cms),
-             data = ~ subset(., cms %in% c('cmsb','cmsa') & type.f == 'Del')) +
+             data = ~ subset(., cms %in% c('ccsb','ccsa') & type.f == 'Del')) +
     geom_line(aes(x = start/10000000 , y = pflip, color = cms),
-             data = ~ subset(., cms %in% c('cmsb','cmsa') & type.f == 'Amp')) + 
+             data = ~ subset(., cms %in% c('ccsb','ccsa') & type.f == 'Amp')) + 
     
     geom_point(  data = ~ subset(., genename %in% ALL_ONCOGENES & cms == 'all' & pvalue > 1), color='grey') +
-    geom_point(  data = ~ subset(., genename %in% cmsb_ONCOGENES & cms == 'cmsb'& pvalue > 1), color="#EDA71A") +
-    geom_point(  data = ~ subset(., genename %in% cmsa_ONCOGENES & cms == 'cmsa'& pvalue > 1), color="#04597C" ) +
+    geom_point(  data = ~ subset(., genename %in% cmsb_ONCOGENES & cms == 'ccsb'& pvalue > 1), color="#EDA71A") +
+    geom_point(  data = ~ subset(., genename %in% cmsa_ONCOGENES & cms == 'ccsa'& pvalue > 1), color="#04597C" ) +
     
     
     geom_label_repel(aes(label=genename),
@@ -680,12 +640,12 @@ cnv.gistic.subtype <-
     ) +
     
     geom_label_repel(aes(label=genename), color="#EDA71A",
-                   data = ~ subset(., genename %in% cmsb_ONCOGENES & cms == 'cmsb' & pvalue > 1), 
+                   data = ~ subset(., genename %in% cmsb_ONCOGENES & cms == 'ccsb' & pvalue > 1), 
                    box.padding = 1, force = 4, max.time = 2,  min.segment.length = 0, size=4
                    
     ) +
     geom_label_repel(aes(label=genename),color="#04597C",
-                   data = ~ subset(., genename %in% cmsa_ONCOGENES & cms == 'cmsa' & pvalue > 1), 
+                   data = ~ subset(., genename %in% cmsa_ONCOGENES & cms == 'ccsa' & pvalue > 1), 
                    box.padding = 1, force = 4, max.time = 2,  min.segment.length = 0, size=4
                    
     ) +
@@ -695,8 +655,8 @@ cnv.gistic.subtype <-
     scale_alpha_manual(values = c(0.25)) +
     scale_fill_manual(values=c("darkred", "darkblue")) +
     scale_color_manual(values = c(
-     "cmsb"    = "#EDA71A" , 
-     "cmsa" = "#04597C" 
+     "ccsb"    = "#EDA71A" , 
+     "ccsa" = "#04597C" 
     )) +
     guides(  fill='none')+
     
@@ -722,8 +682,9 @@ cnv.gistic.subtype <-
 
 cnv.gistic.subtype
     
-ggsave(filename=paste0(basedir, "/results/fig/FIG4D.cnv.gistic.subtype.svg"), plot = 
+ggsave(filename=paste0(data.dir, "/results/fig/FIG4D.cnv.gistic.subtype.svg"), plot = 
   cnv.gistic.subtype
 ,   device = "svg",width = 210, height = 100, units='mm' )
+
 
 ```

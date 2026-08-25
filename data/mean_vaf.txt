@@ -1,0 +1,2 @@
+sample	mean.vaf
+this_sample	0.43

@@ -1,3 +1,5 @@
+#! /usr/bin/env Rscript
+
 '%ni%' <- function(x,y)!('%in%'(x,y))
 
 concatenate_ids <- function(this_req){
@@ -25,7 +27,6 @@ get_gene_frequencies <- function(variants_by_sample){
   return(variant_frequency)
 }
 
-
 get_gene_frequencies_oncokb <- function(variants_by_sample){
   # makes sure donors can only have a mutation once (no two-knockouts, no two samples)
   by_donor <- variants_by_sample %>% group_by(donor, gene, top_oncokb_level) %>% tally()
@@ -36,7 +37,6 @@ get_gene_frequencies_oncokb <- function(variants_by_sample){
   variant_frequency$gene_factor    <- factor(variant_frequency$gene,  levels = levels(variants_by_sample$gene_factor))
   return(variant_frequency)
 }
-
 
 get_tier_frequencies_oncokb <- function(variants_by_sample){
   # makes sure donors can only have a mutation once (no two-knockouts, no two samples)
@@ -58,9 +58,8 @@ get_tier_frequencies_oncokb <- function(variants_by_sample){
   return(variant_frequency)
 }
 
-
-## replaces get_frequencies from functions to account for "final_status"
 get_gene_frequencies_final_status <- function(variants_by_sample){
+  ## replaces get_frequencies from functions to account for "final_status"
   # makes sure donors can only have a mutation once (no two-knockouts, no two samples)
   by_donor <- variants_by_sample %>% group_by(donor, gene,  final_status) %>% tally()
   by_donor$n <- 1
@@ -71,8 +70,8 @@ get_gene_frequencies_final_status <- function(variants_by_sample){
   return(variant_frequency)
 }
 
-## replaces get_frequencies from functions to account for "final_status"
 get_gene_frequencies_final_status_pathway <- function(variants_by_sample){
+  ## replaces get_frequencies from functions to account for "final_status"
   # makes sure donors can only have a mutation once (no two-knockouts, no two samples)
   by_donor <- variants_by_sample %>% group_by(donor, gene, pathway_factor, final_status) %>% tally()
   by_donor$n <- 1
@@ -178,60 +177,6 @@ make_pvalue_table <- function(immune_melt_IO){
   return(pvalue_table)
 }
 
-pull_actions_from_MTB_json <- function(MTB_variants){
-  
-  first=T
-  treatment=therapy=rank=NA
-  
-  for(req in c(1:length(MTB_variants))){
-    
-    this_req <- MTB_variants[[req]]
-    pasted_id <- concatenate_ids(this_req)
-    
-    if(length(this_req$mutations) > 0){
-      for(mutation in c(1:length(this_req$mutations))){
-        
-        
-        this_mutation <- this_req$mutations[[mutation]]
-
-        if("targetable" %in% names(this_mutation)){
-          if(length(this_mutation$targetable) > 0){
-            for(action in c(1:length(this_mutation$targetable))){
-              actionable_req = T
-              
-              this_action <- this_mutation$targetable[[action]]
-              if("therapy" %in% names(this_action)){ therapy = this_action$therapy} else {therapy = NA}
-              if("treatment" %in% names(this_action)){ treatment = this_action$treatment} else {treatment = NA}
-              if("rank" %in% names(this_action)){ rank = this_action$rank} else {rank = NA}
-              
-              if("variant_type" %in% names(this_mutation)){ variant_type = this_mutation$variant_type} else {variant_type = NA}
-              if("variant" %in% names(this_mutation)){ variant = this_mutation$variant} else {variant = NA}
-              
-              var_tmp_df <- cbind.data.frame(
-                "BTC_ID"= this_req$ids$BTC_ID,
-                "donor"= pasted_id,
-                "gene"= this_mutation$gene,
-                "variant_type"= variant_type,
-                "variant"= variant,
-                "treatment" = treatment,
-                "therapy" = therapy,
-                "rank" = rank
-              )
-              
-              if(first){MTB_df <- var_tmp_df; first=F}else{MTB_df <- rbind.data.frame(MTB_df,var_tmp_df)}
-            } 
-          } 
-        } 
-      }
-    }
-    
-  }
-  
-  return(MTB_df)
-}
-
-
-
 get_tdp_score <- function(this.sv_file){
   
   #get chromosome sizes
@@ -296,97 +241,6 @@ pull_expression <- function(sample_list, gene_list, basedir = "/Volumes/pcsi/pip
   return(joined_file)
 }
 
-pull_mutations_from_MTB_json <- function(MTB_variants){
-  first=T
-  for(req in c(1:length(MTB_variants))){
-    
-    this_req <- MTB_variants[[req]]
-    cat(req," ")
-    
-    pasted_id <- concatenate_ids(this_req)
-    
-    if(length(this_req$mutations) > 0){
-      for(mutation in c(1:length(this_req$mutations))){
-        this_mutation <- this_req$mutations[[mutation]]
-        
-        var_tmp_df <- cbind.data.frame(
-          "BTC_ID"= this_req$ids$BTC_ID,
-          "donor"= pasted_id,
-          "gene"= this_mutation$gene
-        )
-        cat(mutation,"\n")
-        print(var_tmp_df)
-        if(first){MTB_df <- var_tmp_df; first=F}else{MTB_df <- rbind.data.frame(MTB_df,var_tmp_df)}
-        
-      }
-    }else{
-      var_tmp_df <- cbind.data.frame(
-        "BTC_ID"= this_req$ids$BTC_ID,
-        "donor"= pasted_id,
-        "gene"= NA
-      )
-      cat(mutation,"\n")
-      print(var_tmp_df)
-      if(first){MTB_df <- var_tmp_df; first=F}else{MTB_df <- rbind.data.frame(MTB_df,var_tmp_df)}
-      
-    }
-    
-  }
-  
-  return(MTB_df)
-}
-
-pull_rip_from_MTB_json <- function(MTB_variants){
-  first=T
-  for(req in c(1:length(MTB_variants))){
-    
-    this_req <- MTB_variants[[req]]
-    
-    pasted_id <- concatenate_ids(this_req)
-    rip = "Alive at MTB"
-    if("hx" %in% names(this_req)){
-      for(history in c(1:length(this_req$hx))){
-        this_history = this_req$hx[[history]]
-        if("RIP" %in% names(this_history)){
-          rip = "Succumbed by MTB" 
-        }
-      }
-    }
-    var_tmp_df <- cbind.data.frame(
-      "BTC_ID"= this_req$ids$BTC_ID,
-      "pasted_id"= pasted_id,
-      "rip"= rip
-    )
-    if(first){rip_df <- var_tmp_df; first=F}else{rip_df <- rbind.data.frame(rip_df,var_tmp_df)}
-    
-  }
-  return(rip_df)
-}
-
-pull_variants_from_CAP_json <- function(CAP_variants){
-  first=T
-  for(req in c(1:length(CAP_variants))){
-    this_req <- CAP_variants[[req]]
-    
-    if(this_req$QC == "PASS" & length(this_req$mutations) > 0){
-      for(mutation in c(1:length(this_req$mutations))){
-        this_mutation <- this_req$mutations[[mutation]]
-        
-        var_tmp_df <- cbind.data.frame(
-          "donor"= this_req$study_id,
-          "gene"= this_mutation$gene,
-          "variant"= this_mutation$variant,
-          "oncokb_level"= this_mutation$oncokb_level
-        )
-        
-        if(first){CAP_df <- var_tmp_df;first=F}else{CAP_df <- rbind.data.frame(CAP_df,var_tmp_df)}
-        
-      }
-    }
-  }
-  return(CAP_df)
-}
-
 check_specific_substitutions <- function(these_variants, this_alteration, actionable_variants_list, this_level,this_indication, this_drug, this_gene){
   for(variant_row in c(1:nrow(these_variants))){
     
@@ -408,7 +262,6 @@ check_specific_substitutions <- function(these_variants, this_alteration, action
   return(actionable_variants_list)
 }
 
-
 get_first_aa <- function(these_variants){
   these_aas <- c()
   for(variant_row in c(1:nrow(these_variants))){
@@ -426,7 +279,6 @@ get_first_aa <- function(these_variants){
   }
   return(these_aas)
 }
-
 
 get_oncokb_actionable_variants <- function( somatic_variants_oncoKB_filtered, oncokb_genes, oncogenic_variants, TRUNCATING_MUTATIONS, INCLUDES_BILIARY, cohort=NULL, summary=NULL, actionable_fusions=NULL, other_biomarkers=NULL){
   require(rlist)
@@ -583,8 +435,6 @@ get_oncokb_actionable_variants <- function( somatic_variants_oncoKB_filtered, on
   return(actionable_variants_df)
 }
 
-
-
 get_actionable_mutations <- function(psc_actionable, actionable_list, mutation_type.actionable_type ){
   first=T
   for(row in c(1:nrow(actionable_list))){
@@ -660,8 +510,7 @@ add_sv_clusters_to_summary <- function(chrLength_data, summary_path="/Volumes/pc
   return(summary_raw)
 }
 
-
-predict_TSP_with_confidence <- function(tsp_classifier, tpm_matrix, confidence_cutoff = 0.75) {
+predict_TSP_with_confidence <- function(tsp_classifier, tpm_matrix, confidence_cutoff = 0.5) {
   
   if(length(tsp_classifier$TSPs) > nrow(tsp_classifier$aliases['symbol'])){
     stop('There is a formatting error in aliases, some genes are missing')
@@ -737,8 +586,8 @@ predict_TSP_with_confidence <- function(tsp_classifier, tpm_matrix, confidence_c
   predictions$confidence <- as.numeric(predictions$confidence)
   
   predictions$rna_class <- NA
-  predictions$rna_class[predictions$predicted_label == 0] <- 'CMS-A'
-  predictions$rna_class[predictions$predicted_label == 1] <- 'CMS-B'
+  predictions$rna_class[predictions$predicted_label == 0] <- 'CCS-A'
+  predictions$rna_class[predictions$predicted_label == 1] <- 'CCS-B'
   
   predictions$confidence.polarized <- predictions$confidence
   predictions$confidence.polarized[predictions$predicted_label == 1 & !is.na(predictions$predicted_label)] <-
@@ -748,5 +597,103 @@ predict_TSP_with_confidence <- function(tsp_classifier, tpm_matrix, confidence_c
   predictions$rna_class[predictions$confidence <= confidence_cutoff] <- NA
   
   return(predictions)
+}
+
+test_rda <- function(tpm.t, location, rna_class, site){
+  
+  pca_rda <- rda(tpm.t, scale = TRUE)
+  
+  eig.val <- (eigenvals(pca_rda) / pca_rda$tot.chi)*100
+  
+  r.tab = NULL
+  for(i in c(1:5)){
+    
+    fit2_f1 <- envfit(pca_rda, location, permutations = 999, choices = i:i)
+    fit2_f2 <- envfit(pca_rda, rna_class, permutations = 999, choices = i:i)
+    fit3_f3 <- envfit(pca_rda, site, permutations = 999, choices = i:i)
+    
+    this.r.tab <- rbind.data.frame ( 
+      cbind('i'=as.numeric(i),
+            'f'='anatomy',
+            'e'=as.numeric(eig.val[i]),
+            'r'=unlist(fit2_f1$factors$r),
+            'p'=unlist(fit2_f1$factors$pvals)
+      ),
+      cbind('i'=as.numeric(i),
+            'f'='CCS',
+            'e'=as.numeric(eig.val[i]),
+            'r'=unlist(fit2_f2$factors$r),
+            'p'=unlist(fit2_f2$factors$pvals)
+      ),
+      cbind('i'=as.numeric(i),
+            'f'='site',
+            'e'=as.numeric(eig.val[i]),
+            'r'=unlist(fit3_f3$factors$r),
+            'p'=unlist(fit3_f3$factors$pvals)
+      )
+    )
+    
+    if(is.null(r.tab)){
+      r.tab <- this.r.tab
+    } else{
+      r.tab <- rbind.data.frame(r.tab,
+                                this.r.tab)
+    }
+    
+  }
+  
+  r.tab$p <- as.numeric(r.tab$p)
+  r.tab$r <- as.numeric(r.tab$r)
+  r.tab$e <- as.numeric(r.tab$e)
+  
+  r.tab$p.sig <- NA
+  r.tab$p.sig[r.tab$p < 0.05] <- r.tab$p[r.tab$p < 0.05]
+  
+  r.tab$pc.i <- paste0('PC',r.tab$i)
+  r.tab$pc.i <- factor(r.tab$pc.i, levels=rev(paste0('PC',c(1:5)) ))
+  r.tab$factor <- factor(r.tab$f, levels=rev(c('CCS','anatomy','site')))
+  r.tab$var = r.tab$r * r.tab$e
+  
+  return(r.tab)
+}
+
+predict_gCCS <- function(cn, med.vaf, genebed, cytoBand, full_model ){
+  
+  require(CNTools)
+  
+  segmented.data <- CNSeg(cn)
+  
+  segment.gene <- getRS(
+    segmented.data, 
+    by="gene", 
+    imput=FALSE, 
+    XY=FALSE, 
+    geneMap=genebed, 
+    what="min")
+  
+  segment.gene <- rs(segment.gene)
+  
+  segment.gene.cyto <- inner_join(cytoBand, segment.gene,  by=c('Hugo_Symbol'='genename'), relationship = "many-to-many")
+  
+  arm.med <- segment.gene.cyto %>%
+    group_by(arm ) %>% 
+    summarise(across(11:ncol(segment.gene.cyto)-1, \(x) median(x, na.rm = TRUE)))
+  
+  transposed.raw <- arm.med %>%
+    column_to_rownames(var = names(arm.med)[1]) %>%  # Use first column as rownames
+    t() %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "sample") %>%
+    mutate(across(-sample, as.numeric)) %>%  # Ensure numeric columns
+    as_tibble()
+  
+  names(transposed.raw)[-1] <- paste0('arm.',names(transposed.raw)[-1])
+  
+  # add VAF
+  transposed.raw <- inner_join(med.vaf, transposed.raw, by=c('Tumor_Sample_Barcode'='sample'))
+  
+  # predict
+  transposed.raw$prob <- predict(full_model, transposed.raw , type = "response")
+  return(transposed.raw)
 }
 

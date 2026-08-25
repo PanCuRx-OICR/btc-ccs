@@ -1,0 +1,251 @@
+
+```{r}
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(Matrix)
+  library(MCL)
+  library(switchBox)
+  library(DescTools)
+  library(cluster)
+  library(ggplot2)
+  library(ggraph)
+  library(ggrepel)
+  library(ggforce)
+  library(PNWColors)
+  library(tidygraph)
+  library(igraph)
+  library(cowplot)
+  library(ggalluvial)
+})
+
+
+
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
+
+source( file.path(code.dir, "bin/network.functions.R"))
+source( file.path(code.dir, "bin/BTC.functions.R"))
+
+clinic.sample.info <- fread(file.path(data.dir,"/results/samples.info.txt"), header=T)
+
+filtered_mat <- prep_expression_data(basedir = data.dir, 
+                                     subset=clinic.sample.info$Sample)
+
+whole.classifier <- readRDS(file.path(data.dir,"/results/tps.classifier.rds"))
+
+whole.score <- predict_TSP_with_confidence(tsp_classifier=whole.classifier, 
+                                                 tpm_matrix=filtered_mat, 
+                                                 confidence_cutoff = 0.5)
+
+whole.scores <- whole.score$rna_class
+names(whole.scores) <- rownames(whole.score)
+
+```
+
+## SUBSET TO PRIMARIES
+
+```{r}
+
+
+primaries <- clinic.sample.info$Sample[clinic.sample.info$Sample_Progression == 'Primary']
+
+labels_df.full <- fread(file.path(data.dir,"/results/classified.FF.txt")) %>% 
+  dplyr::select( -starts_with("martinserrano") )
+
+labels_df.raw <- labels_df.full %>% filter(Sample %in% primaries)
+classifieds.n <- tally_class_assignments(labels_df.raw)
+
+labels_df <- remove_unassigned_classifiers(labels_df.raw, classifieds.n)
+
+adj <- make_adjacency_matrix(labels_df)
+
+adj_filtered <- remove_disconnected_classes(labels_df, adj)
+
+inflation.res <- explore_optimization_space(adj_filtered)
+final.inflation <- as.numeric(inflation.res['inflation'])
+
+final.adj_classed <- filter_for_inflation(adj_filtered, final.inflation)
+
+final.membership <- assign_classes_to_clusters(final.adj_classed, final.inflation)
+
+dt <- assign_consensus_to_calls(labels_df, final.membership)
+
+cms_labels <- make_consensus_cohort(labels_df, dt)
+
+classifier <- train_tsp_on_consensus_cohort(filtered_mat, cms_labels, data.dir)
+
+primaries.score <- predict_TSP_with_confidence(tsp_classifier=classifier, 
+                                                 tpm_matrix=filtered_mat, 
+                                                 confidence_cutoff = 0.5)
+
+
+primaries.scores <- primaries.score$rna_class
+names(primaries.scores) <- rownames(primaries.score)
+
+```
+
+## SUBSET TO TREATMENT NAIVE
+
+```{r}
+
+naive <- clinic.sample.info$Sample[clinic.sample.info$tissue_before_chemo == T]
+
+labels_df.raw <- labels_df.full %>% filter(Sample %in% naive)
+classifieds.n <- tally_class_assignments(labels_df.raw)
+
+labels_df <- remove_unassigned_classifiers(labels_df.raw, classifieds.n)
+
+adj <- make_adjacency_matrix(labels_df)
+
+adj_filtered <- remove_disconnected_classes(labels_df, adj)
+
+inflation.res <- explore_optimization_space(adj_filtered)
+final.inflation <- as.numeric(inflation.res['inflation'])
+
+final.adj_classed <- filter_for_inflation(adj_filtered, final.inflation)
+
+final.membership <- assign_classes_to_clusters(final.adj_classed, final.inflation)
+
+dt <- assign_consensus_to_calls(labels_df, final.membership)
+
+cms_labels <- make_consensus_cohort(labels_df, dt)
+
+classifier <- train_tsp_on_consensus_cohort(filtered_mat, cms_labels, data.dir)
+
+naive.score <- predict_TSP_with_confidence(tsp_classifier=classifier, 
+                                                 tpm_matrix=filtered_mat, 
+                                                 confidence_cutoff = 0.5)
+
+
+naive.scores <- naive.score$rna_class
+names(naive.scores) <- rownames(naive.score)
+
+```
+
+## Combine data
+
+```{r}
+
+all.scores <- cbind.data.frame(whole.scores,  primaries.scores, naive.scores)
+
+all.scores$primaries.scores.flip = NA
+all.scores$primaries.scores.flip[all.scores$primaries.scores == 'CCS-A'] <- 'CCS-B'
+all.scores$primaries.scores.flip[all.scores$primaries.scores == 'CCS-B'] <- 'CCS-A'
+all.scores$primaries.scores <- all.scores$primaries.scores.flip
+
+all.scores$naive.scores.flip = NA
+all.scores$naive.scores.flip[all.scores$naive.scores == 'CCS-A'] <- 'CCS-B'
+all.scores$naive.scores.flip[all.scores$naive.scores == 'CCS-B'] <- 'CCS-A'
+all.scores$naive.scores <- all.scores$naive.scores.flip
+
+all.scores <- all.scores %>% dplyr::select(-naive.scores.flip, -primaries.scores.flip)
+
+transition_df.1 <- all.scores %>%  group_by(whole.scores, primaries.scores, naive.scores) %>% tally()
+
+colnames(transition_df.1) <- c("baseline", "Primaries","Naive", "Freq")
+
+transition.max <- transition_df.1 %>% group_by(baseline) %>% filter(Freq == max(Freq) ) 
+
+transition_df.1$baseline.f <- factor(transition_df.1$baseline, 
+                                  levels=transition.max$baseline[order(transition.max$baseline)])
+
+agreement.plot <- 
+  ggplot(transition_df.1,
+            aes(axis1 = baseline.f, axis2 = Primaries, axis3 = Naive, y = Freq)) +
+     geom_alluvium(width=0.8,  aes(fill=baseline.f)) +
+     geom_stratum(width=0.8, color = "black", aes(fill=baseline.f), alpha=0.2) +
+     geom_text(stat = "stratum", aes(label = after_stat(stratum)), size=2) +
+     scale_x_discrete(limits = colnames(transition_df.1)[1:3], expand = c(.05, .05)) +
+     scale_fill_manual(  
+       values =  pnw_palette(name="Sailboat", n=2 )
+       , na.value = 'white') +
+     theme_bw(base_size=10) + 
+     guides(fill='none')+
+     labs(fill='baseline', y='Sample Count')+
+     theme(
+       plot.margin = unit(c(0, 0, 0, 0.5), "mm"),
+       panel.spacing = unit(0, "mm"),
+       panel.background = element_blank(),
+       panel.border = element_blank(),
+       plot.background = element_blank(),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(),
+       strip.background = element_blank(),
+     )
+
+all.confidence <- cbind.data.frame('sample'=rownames(whole.score),
+                                    'whole'=whole.score$confidence.polarized,  
+                                   'primary'=1-primaries.score$confidence.polarized, 
+                                   'naive'=1-naive.score$confidence.polarized)
+
+confidence.plot <-
+  ggplot(all.confidence, aes(x=primary, y=naive)) + theme_bw() +
+    geom_vline(xintercept = 10/16*100, color='grey80') + geom_hline(yintercept = 10/16, color='grey80') +
+    geom_hline(yintercept = 6/16*100, color='grey80') + geom_vline(xintercept = 6/16, color='grey80') +
+    xlim(0,1) + ylim(0,1) +
+    geom_point(aes(color=whole )) + coord_fixed() +
+    scale_color_gradient2(
+      low = "#04597C",
+      mid = "grey80",
+      high = "#EDA71A",
+      midpoint = 0.5
+    ) + theme(panel.grid=element_blank()) + 
+  labs(x='Primaries',y='Naive',color='baseline')
+  
+
+
+robustness.plot <-          plot_grid(
+        agreement.plot,
+        confidence.plot   
+           
+           ,ncol = 2, rel_widths = c(0.4,0.6)
+         )
+
+robustness.plot
+
+ggsave(paste0(data.dir, "/results/fig/FIGS2de.robustness.plot.svg"),plot =
+  robustness.plot
+, device = "svg", height = 65, width = 120, units = 'mm' )
+
+all.confidence %>% filter(10/16 >= whole & whole >= 6/16) %>% 
+  dplyr::select(sample) %>% c()
+
+```
+
+
+## generate cohort-based RNA tables
+For downstream analyses like NMF
+
+```{r}
+
+  htseq.good <- fread(file.path(data.dir,"/results/rna.read.ff.txt"))
+
+  htseq.naive <- htseq.good %>% dplyr::select(all_of(c('gene_name',
+                                        intersect(naive, names(htseq.good))
+                                        )))
+
+  write.table( htseq.naive,  file = file.path(data.dir,"/results/rna.read.naive.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+
+  htseq.primaries <- htseq.good %>% dplyr::select(all_of(c('gene_name',
+                                        intersect(primaries, names(htseq.good))
+                                        )))
+
+  write.table( htseq.primaries,  file = file.path(data.dir,"/results/rna.read.primaries.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+
+  
+  iccas <- clinic.sample.info$Sample[clinic.sample.info$location == 'Intrahepatic']
+
+  htseq.iccas <- htseq.good %>% dplyr::select(all_of(c('gene_name',
+                                        intersect(iccas, names(htseq.good))
+                                        )))
+
+  write.table( htseq.iccas,  file = file.path(data.dir,"/results/rna.read.iccas.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+
+  
+```
+
+

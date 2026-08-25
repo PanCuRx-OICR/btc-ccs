@@ -3,7 +3,7 @@
 library(data.table)
 library(optparse)
 
-predict_TSP_with_confidence <- function(tsp_classifier, tpm_matrix, confidence_cutoff = 0.8) {
+predict_TSP_with_confidence <- function(tsp_classifier, tpm_matrix, confidence_cutoff = 0.5) {
   
   if(length(tsp_classifier$TSPs) > nrow(tsp_classifier$aliases['symbol'])){
     stop('There is a formatting error in aliases, some genes are missing')
@@ -50,7 +50,9 @@ predict_TSP_with_confidence <- function(tsp_classifier, tpm_matrix, confidence_c
   }
   
   predictions <- apply(tpm_matrix, 2, function(sample_expr) {
+    
     votes <- sapply(1:n_pairs, function(i) {
+      
       gene1 <- tsp_pairs[i, 1]
       gene2 <- tsp_pairs[i, 2]
       if (sample_expr[gene1] > sample_expr[gene2]) {
@@ -58,12 +60,12 @@ predict_TSP_with_confidence <- function(tsp_classifier, tpm_matrix, confidence_c
       } else {
         return(labels[2])  # Class 1
       }
+      
     })
     
     vote_table <- table(votes)
     predicted_label <- names(which.max(vote_table))
     confidence <- max(vote_table) / n_pairs
-    
     
     # Set label to NA if confidence is exactly 0.5
     if (confidence == 0.5) {
@@ -79,8 +81,8 @@ predict_TSP_with_confidence <- function(tsp_classifier, tpm_matrix, confidence_c
   predictions$confidence <- as.numeric(predictions$confidence)
   
   predictions$rna_class <- NA
-  predictions$rna_class[predictions$predicted_label == 0] <- 'CMS-A'
-  predictions$rna_class[predictions$predicted_label == 1] <- 'CMS-B'
+  predictions$rna_class[predictions$predicted_label == 0] <- 'eCCS-A'
+  predictions$rna_class[predictions$predicted_label == 1] <- 'eCCS-B'
   
   predictions$confidence.polarized <- predictions$confidence
   predictions$confidence.polarized[predictions$predicted_label == 1 & !is.na(predictions$predicted_label)] <-
@@ -88,37 +90,56 @@ predict_TSP_with_confidence <- function(tsp_classifier, tpm_matrix, confidence_c
   
   predictions$predicted_label[predictions$confidence <= confidence_cutoff] <- NA
   predictions$rna_class[predictions$confidence <= confidence_cutoff] <- NA
+  predictions$sample_id <- colnames(tpm_matrix)
   
   return(predictions)
 }
 
-option_list = list(
-  make_option(c("-i", "--input"), type="character", default=NULL, help="", metavar="PATH"),
-  make_option(c("-o", "--output"), type="character", default=NULL, help="", metavar="PATH"),
-  make_option(c("-m", "--model"), type="character", default=NULL, help="", metavar="PATH")
-)
 
-opt_parser <- OptionParser(option_list=option_list, add_help_option=TRUE)
-opt <- parse_args(opt_parser)
-
-file_path <- opt$input
-model_path <- opt$model
-output_path <- opt$output
-
-#file_path= paste0("/Volumes/pcsi/users/fbeaudry/tpm.txt")
-#model_path=paste0("/Volumes/pcsi/references/cohort_lists/LBR.tps.classifier.rds")
-#
-if( all(file.exists(file_path) & file.exists(cohort_path) & file.exists(gene_list_path)) ){
+predict_gCCS <- function(cn, vaf, genebed, cytoband, full_model, THRESHOLD = 0.5 ){
   
-  classifier <- readRDS(model_path)
-  rna_raw <- fread(file_path)
+  require(dplyr)
+  require(tibble)
+  require(CNTools)
   
-  rna_raw.mat <- as.matrix(rna_raw[,-c(1,3)])
-  rownames(rna_raw.mat) <- rna_raw$gene_name
+  segmented.data <- CNSeg(cn)
   
-  predicted.w.score <- predict_TSP_with_confidence(tsp_classifier=classifier, tpm_matrix=rna_raw.mat)
-  write.table( predicted.w.score,  file = output_path, row.names = F, quote = FALSE, sep = "\t", col.names = T)
-
-} else { cat("rna not found for ",file_path, "\n") 
-  write.table( c(),  file = output_path, row.names = T, quote = FALSE, sep = "\t", col.names = F)
+  segment.gene <- getRS(
+    segmented.data, 
+    by="gene", 
+    imput=FALSE, 
+    XY=FALSE, 
+    geneMap=genebed, 
+    what="min")
+  
+  segment.gene <- rs(segment.gene)
+  
+  segment.gene.cyto <- inner_join(cytoband, segment.gene,  by=c('Hugo_Symbol'='genename'), relationship = "many-to-many")
+  
+  col.names <- names(segment.gene.cyto)[-c(1:7)]
+  
+  arm.med <- segment.gene.cyto %>%
+    group_by(arm ) %>% 
+    summarise(across(all_of(col.names), \(x) median(x, na.rm = TRUE)))
+  
+  transposed.raw <- arm.med %>%
+    column_to_rownames(var = names(arm.med)[1]) %>%  
+    t() %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "sample") %>%
+    mutate(across(-sample, as.numeric)) %>%  
+    as_tibble()
+  
+  names(transposed.raw)[-1] <- paste0('arm.',names(transposed.raw)[-1])
+  
+  # add VAF
+  transposed.raw <- inner_join(vaf, transposed.raw, by=c('sample'='sample'))
+  
+  # predict
+  transposed.raw$prob <- predict(full_model, transposed.raw , type = "response")
+  transposed.raw$glm_labels <- ifelse(transposed.raw$prob < THRESHOLD, 'gCCS-B', 'gCCS-A')
+  transposed.raw$prob <- round(transposed.raw$prob, 3)
+  transposed <- transposed.raw %>% dplyr::select(sample,glm_labels,prob)
+  
+  return(transposed)
 }

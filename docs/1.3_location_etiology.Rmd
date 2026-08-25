@@ -1,0 +1,169 @@
+# Anatomical location by CCS
+We also check in this script whether primary/metastatic pairs have consistent CCS
+
+## Anatomical location
+Where in the biliary tract do the CCS show up most often?
+```{r}
+
+suppressPackageStartupMessages({
+
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(ggplot2)
+  library(survival)
+  library(survMisc)
+  library(survminer)
+  library(ggupset)
+  
+})
+
+#`%ni%` <- Negate(`%in%`)
+
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
+source( file.path(code.dir, "bin/BTC.functions.R"))
+
+predicted.w.score <- fread(file.path(data.dir,'/results/all.eCCS.txt'))
+predicted.w.score$rna_class[is.na(predicted.w.score$rna_class)] <- 'Other'
+predicted.w.score$final.cms <- factor(predicted.w.score$rna_class, levels = rev(c("CCS-A" ,'Other',"CCS-B")))
+
+clinic.sample.info <- fread(file.path(data.dir,"/results/samples.info.txt"))
+unique(clinic.sample.info$Site_of_tissue)
+
+clinic.sample.info$Site_of_tissue[clinic.sample.info$Site_of_tissue == '' ] <- NA
+clinic.sample.info$site_of_tissue <- factor(clinic.sample.info$Site_of_tissue, 
+                                            levels = c("Liver", "Hepatic Duct", "CBD",
+                                                       "Gallbladder", "Neck", "Spine", "Abdomen"))
+clinic.sample.info$location <- 
+  factor(clinic.sample.info$location, levels=rev(c('HCC-CCA','Intrahepatic','Perihilar','Gallbladder','Distal')))
+
+clinic.sample.info.calls <- left_join(clinic.sample.info, predicted.w.score)
+
+class.tissue.cms.n <- clinic.sample.info.calls %>% 
+  group_by(final.cms, site_of_tissue, location) %>% tally() 
+
+class.tissue.cms.n$n[class.tissue.cms.n$final.cms == 'CCS-B' & !is.na(class.tissue.cms.n$final.cms)] <- 
+  -class.tissue.cms.n$n[class.tissue.cms.n$final.cms == 'CCS-B'& !is.na(class.tissue.cms.n$final.cms)]
+
+cms.histology.biopsy.plot <- 
+         ggplot(class.tissue.cms.n %>% filter(!is.na(location) & !is.na(site_of_tissue) & 
+                                                !is.na(final.cms) & final.cms != 'Other'), 
+                aes(x=location, y=n, fill=site_of_tissue)) + 
+         facet_grid(.~final.cms, space='free',scales='free') + 
+         geom_bar(stat='identity', position = 'stack') + 
+           theme_bw(base_size=10) + 
+         labs(x='Histological Subtype of Primary', y='Tumour Count', fill='Site of Biopsy') +
+         theme(panel.grid = element_blank(),
+               panel.background = element_blank(),
+               panel.border = element_blank(),
+               plot.background = element_blank(),
+               axis.title.x = element_blank(),
+               legend.background = element_blank(),
+               panel.spacing = unit(3, "lines"),
+               legend.key.size = unit(0.5, "lines"),    
+              axis.title.y = element_blank(),
+             axis.text.y = element_blank(),
+             axis.ticks.y = element_blank(),
+              axis.line.x = element_line(color = "black")
+         )+
+         scale_fill_manual(values = c(
+           
+           "Liver"  = "forestgreen" ,
+           "Hepatic Duct"  = "skyblue" ,
+           "CBD"  = "cornflowerblue" ,
+           "Gallbladder"  = "darkblue" ,
+
+           "Abdomen"   = 'grey60',
+           "Spine"   = 'grey70',
+           "Neck"   = 'grey80'
+         )) + coord_flip()  +
+  scale_y_continuous(
+    position = "right",
+    breaks = c(-25,0,25,50),
+    labels = \(x) abs(x)
+  )
+         
+cms.histology.biopsy.plot
+
+ggsave(paste0(data.dir, "/results/fig/FIG2a.cms.histology.biopsy.svg"),plot =
+         cms.histology.biopsy.plot
+       , device = "svg", height = 60, width = 100, units = 'mm' )
+
+clinic.sample.info.calls %>% filter(!is.na(final.cms) &
+                                      Sample_Progression == 'Metastasis' & 
+                                      site_of_tissue == 'Liver' &
+                                      location  %in% c('Perihilar','Gallbladder','Distal')) %>% 
+  group_by(final.cms) %>%
+  tally()
+
+iCCA.CCSB.n <- clinic.sample.info.calls %>% 
+  filter(final.cms == 'CCS-B' & location  %in% c('Intrahepatic')) %>% 
+  nrow()
+
+iCCA.n <- clinic.sample.info.calls %>% 
+  filter(!is.na(final.cms)  & location  %in% c('Intrahepatic')) %>% 
+  nrow()
+
+message('eCCS groups ',signif( iCCA.CCSB.n/iCCA.n, 2)*100,'% (n = ',iCCA.CCSB.n,') of intrahepatic cholangiocarcinomas with perihilar and extrahepatic cholangiocarcinomas, suggesting higher-order biological structure not captured by anatomy alone.')
+
+```
+
+## Paired primary-metastatic samples
+How often do tumors switch between the CCS during metastasis? Return to larger cohort list to allow for multiple specimen per case.
+
+```{r}
+
+BTC_clinical.tumours <- fread(file.path(data.dir,'/source_data/BTC_clinical.tumours.tsv'), header=T)
+btc.cellularity.pipeline <- fread(file.path(data.dir,'/results/btc.cellularity.pipeline.txt'), 
+                                  col.names = c('Sample','cellularity','ploidy'), header=F)
+
+BTC_clinical.tumours <- full_join(BTC_clinical.tumours, btc.cellularity.pipeline, by=c('Sample'='Sample'))
+
+sample.list <- fread(file.path(data.dir,'/source_data/sample.list.txt'), col.names = c('donor','tumour','normal'), header=F)
+
+BTC_clinical.tumours$curated <- F
+BTC_clinical.tumours$curated[BTC_clinical.tumours$Sample %in% sample.list$tumour] <- T
+
+
+replicates <- BTC_clinical.tumours %>% group_by(Donor) %>% tally() %>% filter(n>1)
+BTC_clinical.tumours$replicates <- F
+BTC_clinical.tumours$replicates[BTC_clinical.tumours$Donor %in% replicates$Donor] <- T
+
+BTC_clinical.tumours$curated[BTC_clinical.tumours$curated == F & BTC_clinical.tumours$replicates == T] <- 'replicate'
+
+replicates.classed <- left_join(predicted.w.score, BTC_clinical.tumours,by=c('BTC_ID'='Donor','Sample'='Sample')) 
+
+replicates.classed$BTCID <- gsub('_','',replicates.classed$BTC_ID )
+
+replicates.classed <- replicates.classed %>%
+  ## clinical story and SNV overlap of BTC_0025 suggests independent tumors
+  filter(BTCID %in% sample.list$donor & BTC_ID != "BTC_0025")
+
+remove.low.celullarity = T
+if(remove.low.celullarity){
+  replicates.classed <- replicates.classed[replicates.classed$cellularity > 0.3]
+}
+
+replicates.n <- replicates.classed %>%
+  group_by(BTC_ID) %>%
+  summarise(
+    count = n(),
+    consensus = paste(unique(rna_class), collapse = "; "),
+    .groups = "drop"
+  ) %>%
+  filter(count > 1)
+
+replicates.n
+table(replicates.n$consensus)
+
+replicates.write <- replicates.classed %>% 
+  filter(BTC_ID %in% replicates.n$BTC_ID)
+
+write.table( replicates.write,  
+             file = file.path(data.dir,'results', 'replicates.txt'), 
+             row.names = F,col.names = T, quote = FALSE, sep = "\t", append =F)
+
+```
+

@@ -1,0 +1,702 @@
+# Assemble and explore patient cohort
+
+## Load Environment
+
+```{r}
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ggplot2)
+  library(cowplot)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(readxl)
+  library(ggupset)
+  library(PNWColors)
+  library(ggsankey)
+  library(gtsummary)
+})
+
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
+source( file.path(code.dir, "bin/clinical.functions.R"))
+
+all.clinic <- fread(file.path(data.dir,"/results/clinic.info.txt"), header=T)
+all.samples <- fread(file.path(data.dir,"/results/samples.info.txt"), header=T)
+
+all.clinic <- left_join(all.clinic %>% dplyr::select(-BTC_ID),
+all.samples %>% dplyr::select(Study_ID, BTC_ID))
+
+```
+
+## The proverbial table 1
+summarize the cohort
+
+```{r}
+
+t1.data <- all.clinic
+
+na_values <- c("No information", "Not available", "Not Done", "Unknown", "Not stated", "Not applicable", "","N/A")
+
+t1.data <- t1.data %>%
+  mutate(across(everything(), ~replace(., . %in% na_values, NA))) 
+
+t1.res <- t1.data %>%
+  dplyr::select(Age_at_first_histological_diagnosis, Sex_assigned_at_birth 
+  ) %>% 
+tbl_summary(
+  statistic = list(
+    all_continuous() ~ "{median} ({min}, {max})"
+  ),
+  digits = all_continuous() ~ 1
+) %>%
+  add_overall()
+
+t1.res
+
+tableS7B.demographics <- t1.data %>%
+  dplyr::select(BTC_ID, Age_at_first_histological_diagnosis, Sex_assigned_at_birth 
+  ) 
+
+tableS7B.demographics$Age_at_first_histological_diagnosis <- 
+  round(tableS7B.demographics$Age_at_first_histological_diagnosis,1)
+
+  write.table( tableS7B.demographics,  
+              file = file.path(data.dir,"/results/tableS7B.demographics.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+
+```
+
+## Check Treatment Histories
+This is almost entirely data cleaning, moving columns around so that first and second line treatments can be analyzed together, as well as normalizing drug names for uncommon drugs (that weren't in the study schema).
+
+```{r}
+
+First_line_palliative_given <- all.clinic %>%
+  dplyr::select(starts_with("Study_ID") |
+                starts_with("First_line_palliative_chemotherapy_given") |
+                starts_with("Specify_other_first_line_palliative_chemotherapy_or_clinical_trial") |
+                starts_with("First_line_immunotherapy_given")) %>% 
+  reshape2::melt(id.vars = c('Study_ID')) %>% 
+  filter(value %ni% c('Unchecked','') & !is.na(value) &
+          variable %ni% c('First_line_palliative_chemotherapy_given_choiceOther') )
+
+First_line_palliative_given$variable <- gsub('First_line_palliative_chemotherapy_given_choice','',First_line_palliative_given$variable)
+First_line_palliative_given$variable <- gsub('First_line_immunotherapy_given_choice','',First_line_palliative_given$variable)
+
+First_line_palliative_given$variable[First_line_palliative_given$variable == 'Specify_other_first_line_palliative_chemotherapy_or_clinical_trial852'] <- 
+    First_line_palliative_given$value[First_line_palliative_given$variable == 'Specify_other_first_line_palliative_chemotherapy_or_clinical_trial852']
+
+First_line_palliative_given <- First_line_palliative_given %>%
+  group_by(Study_ID) %>%
+  summarise(first_palliative = str_c(variable, collapse = "+"), .groups = "drop") 
+
+Second_line_palliative_given <- all.clinic %>%
+  dplyr::select( 
+    starts_with("Study_ID") | 
+                  starts_with("Second_line_palliative_therapy_given") |
+                  starts_with("Specify_other_second_line_palliative_therapy_or_clinical_trial") |
+                  starts_with("Second_line_immunotherapy_given") | 
+                   starts_with("Other_second_line_immunotherapy")
+      ) %>% 
+  reshape2::melt(id.vars = c('Study_ID')) %>% 
+  filter(value %ni% c('Unchecked','') & !is.na(value) &
+           variable %ni% c('Second_line_palliative_therapy_given_choiceOther', 'Second_line_immunotherapy_given_choiceOther') )
+
+Second_line_palliative_given$variable <- gsub('Second_line_palliative_therapy_given_choice','',Second_line_palliative_given$variable)
+Second_line_palliative_given$variable <- gsub('Second_line_immunotherapy_given_choice','',Second_line_palliative_given$variable)
+
+Second_line_palliative_given$variable[Second_line_palliative_given$variable == 'Specify_other_second_line_palliative_therapy_or_clinical_trial'] <- 
+  Second_line_palliative_given$value[Second_line_palliative_given$variable == 'Specify_other_second_line_palliative_therapy_or_clinical_trial']
+
+Second_line_palliative_given$variable[Second_line_palliative_given$variable == 'Other_second_line_immunotherapy'] <- 
+  Second_line_palliative_given$value[Second_line_palliative_given$variable == 'Other_second_line_immunotherapy']
+
+Second_line_palliative_given <- Second_line_palliative_given %>%
+  group_by(Study_ID) %>%
+  summarise(second_palliative = str_c(variable, collapse = "+"), .groups = "drop") 
+
+palliative <- full_join(First_line_palliative_given, Second_line_palliative_given)
+
+palliative[palliative == "Cisplatingemcitabine+Durvalumab"] <- 'GemCis + Durva'
+palliative[palliative == "Cisplatingemcitabine"] <- 'GemCis'
+
+palliative[palliative == "gemcitabine carboplatin and durvalumab+Durvalumab"] <- 'GemCarbo + Durva'
+palliative[palliative == "carboplatin/gemcitabine+Durvalumab"] <- 'GemCarbo + Durva'
+
+palliative[palliative == "Trial+Ivosidenib (ProvIDHe)"] <- "Ivosidenib" 
+palliative[palliative == "Trial+ivosidenib"] <- "Ivosidenib" 
+palliative[palliative == "Trial+Ivosidenib"] <- "Ivosidenib" 
+
+palliative <- palliative %>%  mutate(across(everything(), ~ str_replace(., "^Trial.*", "Trial Drug")))
+
+palliative_table <- table(c(palliative$first_palliative, palliative$second_palliative ))
+
+rare_treatments <- names(palliative_table[palliative_table < 3])
+
+palliative$first_palliative <- ifelse(palliative$first_palliative %in% rare_treatments, "Other Drug", palliative$first_palliative)
+palliative$second_palliative <- ifelse(palliative$second_palliative %in% rare_treatments, "Other Drug", palliative$second_palliative)
+
+rare_treatments
+
+```
+
+## Make alluvial plot
+Here, we are reorganizing the data so that patient trajectories can be tracked (from intake to treatment through to whether they are still alive). We visualize this as an alluvial plot, part of figure 1 in the manuscript.
+
+```{r}
+
+alluvial.raw <- all.clinic %>% dplyr::select(Study_ID,
+                                         
+                                         Has_the_patient_had_surgery,
+                                         Type_of_Surgery,
+                                         
+                                         Had_Adjuvant_Treatment,
+                                         Adjuvant_Chemotherapy,
+                                         Specify_other_adjuvant_chemotherapy,
+
+                                         Did_the_patient_recur,
+                                         Date_of_disease_progression_known901, ##first instance in data.frame
+                                         
+                                         Date_of_first_infusion_of_first_line_palliative_chemotherapy_known,
+                                         Status)
+
+names(alluvial.raw)[names(alluvial.raw) == 'Date_of_disease_progression_known901'] <- 'Date_of_disease_progression_known'
+
+alluvial <- left_join(alluvial.raw, palliative)
+
+alluvial <- alluvial %>% mutate(across(everything(), ~ ifelse(is.na(.) , "", .)))
+
+alluvial <- alluvial %>% mutate(across(everything(), ~ ifelse(. %in% c("Gemcitabine + Cisplatin + Durvalumab","Gemcitabine+Cisplatin+Durvalumab","Gem/Cis/Durva"), 'GemCis + Durva', .)))
+alluvial <- alluvial %>% mutate(across(everything(), ~ ifelse(. %in% c("Gemcitabine + Cisplatin", "Gemcitabine + cisplatin","Gemcitabine + platnium"), 'GemCis', .)))
+alluvial <- alluvial %>% mutate(across(everything(), ~ ifelse(. %in% c("Gemcitabine"), 'Gem', .)))
+alluvial <- alluvial %>% mutate(across(everything(), ~ ifelse(. %in% c("Maintenance Durvalumab"), 'Durva', .)))
+alluvial <- alluvial %>% mutate(across(everything(), ~ ifelse(. %in% c("Mayo Protocol (Capecitabine with Radiation Therapy)"), 'Capecitabine', .)))
+
+## Type_of_Surgery
+alluvial %>% group_by(Has_the_patient_had_surgery, Type_of_Surgery) %>% tally() %>% arrange(desc(n))
+alluvial$Type_of_Surgery[alluvial$Type_of_Surgery == "" & alluvial$Has_the_patient_had_surgery == "No" ] <-  "No Surgery"
+alluvial$Type_of_Surgery[alluvial$Type_of_Surgery == "" & alluvial$Has_the_patient_had_surgery %in% c("","Yes") ] <-  'Unknown'
+alluvial$Type_of_Surgery[alluvial$Type_of_Surgery == "Palliative"] <- "No Surgery"
+alluvial$Type_of_Surgery[alluvial$Has_the_patient_had_surgery == "Yes, aborted" ] <-  "Surgery Aborted"
+table(alluvial$Type_of_Surgery)
+
+## Adjuvant_Chemotherapy
+alluvial %>% group_by(Had_Adjuvant_Treatment, Adjuvant_Chemotherapy, Specify_other_adjuvant_chemotherapy) %>% tally() %>% arrange(desc(n))
+alluvial$Adjuvant_Chemotherapy[alluvial$Adjuvant_Chemotherapy == 'Other'] <- 
+  alluvial$Specify_other_adjuvant_chemotherapy[alluvial$Adjuvant_Chemotherapy == 'Other']
+alluvial <- alluvial %>% mutate(across(Adjuvant_Chemotherapy, ~ ifelse(. %in% c('5-FU','mFOLFIRINOX'), 'Fluoropyrimidines', .)))
+
+alluvial$Adjuvant_Chemotherapy_Specific <- alluvial$Adjuvant_Chemotherapy
+alluvial$Adjuvant_Chemotherapy[alluvial$Adjuvant_Chemotherapy %in% c("GemCis + Durva")] <- "Systemic Adjuvant"
+alluvial$Adjuvant_Chemotherapy[alluvial$Adjuvant_Chemotherapy %in% c("GemCis", "Gem","Capecitabine","Fluoropyrimidines","Gemcitabine + platnium")] <- "Systemic Adjuvant"
+alluvial$Adjuvant_Chemotherapy[alluvial$Adjuvant_Chemotherapy %in% c("Durva")] <- "Systemic Adjuvant"
+alluvial$Adjuvant_Chemotherapy_Specific[alluvial$Adjuvant_Chemotherapy_Specific %in% c("capecitabine + rilvegostomig")] <-  "Trial Drug"
+alluvial$Adjuvant_Chemotherapy[alluvial$Adjuvant_Chemotherapy %in% c("capecitabine + rilvegostomig")] <-  "Trial Drug"
+alluvial$Adjuvant_Chemotherapy_Specific[alluvial$Adjuvant_Chemotherapy_Specific == "GemCis + Durva"] <-  "GemCis"
+alluvial$Adjuvant_Chemotherapy_Specific[alluvial$Adjuvant_Chemotherapy_Specific == "Durva"] <-  "No Adjuvant Chemo"
+
+alluvial$Adjuvant_Chemotherapy[alluvial$Had_Adjuvant_Treatment == "No" ] <-  "No Adjuvant"
+
+alluvial$Adjuvant_Chemotherapy[alluvial$Type_of_Surgery %in% c("No Surgery","Surgery Aborted") & 
+                                 (is.na(alluvial$Adjuvant_Chemotherapy) | alluvial$Adjuvant_Chemotherapy == "" | alluvial$Adjuvant_Chemotherapy == 'No Adjuvant')] <-  "No Surgery"
+alluvial$Adjuvant_Chemotherapy[alluvial$Adjuvant_Chemotherapy == "" ] <-  "Unknown"
+table(alluvial$Adjuvant_Chemotherapy)
+
+alluvial$Type_of_Surgery[alluvial$Adjuvant_Chemotherapy == "Systemic Adjuvant" ] <-  "Initial Curative"
+
+## Recurrence
+alluvial %>% group_by(Did_the_patient_recur) %>% tally() %>% arrange(desc(n))
+
+alluvial$Did_the_patient_recur[alluvial$Did_the_patient_recur == 'No'] <- 'No Recurrence Documented'
+alluvial$Did_the_patient_recur[alluvial$Did_the_patient_recur == 'Yes'] <- 'Recurrence Detected'
+
+alluvial$Did_the_patient_recur[alluvial$Type_of_Surgery %in% c("No Surgery","Surgery Aborted")] <- "No Surgery"
+
+alluvial$Did_the_patient_recur[alluvial$Type_of_Surgery %in% c("Initial Curative") &
+                                 alluvial$Adjuvant_Chemotherapy %in% c("Systemic Adjuvant","No Adjuvant") &
+                                 alluvial$Did_the_patient_recur == '' &
+                                 alluvial$first_palliative == '' 
+                                 ] <- "No Recurrence Documented"
+alluvial$Did_the_patient_recur[alluvial$Did_the_patient_recur == "" ] <-  "Unknown"
+
+table(alluvial$Did_the_patient_recur)
+
+## 1st Line
+alluvial$first_palliative[alluvial$Did_the_patient_recur == 'No Recurrence Documented'] <- 'No Recurrence Documented'
+alluvial$first_palliative[is.na(alluvial$Did_the_patient_recur)  & is.na(alluvial$Type_of_Surgery) & alluvial$Status == "Unknown" & alluvial$first_palliative == ""] <- NA
+alluvial$first_palliative[alluvial$first_palliative == ''  & alluvial$Date_of_first_infusion_of_first_line_palliative_chemotherapy_known == 'Yes'] <- '1L Started'
+alluvial$first_palliative[alluvial$first_palliative == ''  & alluvial$Did_the_patient_recur == 'Recurrence Detected'] <- 'No Palliative Treatment'
+alluvial$first_palliative[alluvial$first_palliative == ''  & alluvial$Date_of_first_infusion_of_first_line_palliative_chemotherapy_known == '' & alluvial$Date_of_disease_progression_known == ''] <- NA
+alluvial$first_palliative[alluvial$first_palliative == ''  & alluvial$Date_of_first_infusion_of_first_line_palliative_chemotherapy_known == '' & alluvial$Date_of_disease_progression_known == 'Not applicable'] <- NA
+
+alluvial$first_palliative_specific <- alluvial$first_palliative
+alluvial <- alluvial %>% mutate(across(first_palliative_specific, ~ ifelse(. %in% c('FOLFOX'), 'Fluoropyrimidines', .)))
+
+alluvial$first_palliative[alluvial$first_palliative %in% c("GemCis + Durva")] <- "Chemotherapy + Immunotherapy"
+alluvial$first_palliative[alluvial$first_palliative %in% c("Gem","GemCis","Other fluoropyrimidines","FOLFOX","Capecitabine"  )] <- "Chemotherapy"
+alluvial$first_palliative_specific[alluvial$first_palliative %in% c("Pemigatinib" ,"Ivosidenib" )] <- "Other Drug"
+alluvial$first_palliative[alluvial$first_palliative %in% c("Pemigatinib" ,"Ivosidenib" )] <- "Other Drug"
+
+## Final Status
+alluvial$Status[alluvial$Status == ""] <- "Unknown"
+alluvial$Status[alluvial$Status == "LTFU"] <- "Unknown"
+
+write.table( alluvial,  
+            file = file.path(data.dir,"/results/alluvial.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+
+
+sankey_data <- alluvial %>%
+  make_long(
+            
+            Type_of_Surgery,
+            Adjuvant_Chemotherapy,
+            Did_the_patient_recur,
+            first_palliative,
+            Status)
+
+sankey_data[sankey_data == 'Unknown'] <- NA
+
+level_order <- rev(c(
+  "Alive"                  ,    
+  "No Recurrence Documented"     , 
+  "Initial Curative"     ,     
+  "No Palliative Treatment",
+
+  "Recurrence Detected",
+
+  "Chemotherapy",
+  "Chemotherapy + Immunotherapy",
+
+  "Trial Drug"                , 
+  "Other Drug"                ,   
+  "Systemic Adjuvant"                , 
+
+  
+  "Surgery Aborted",
+  'No Adjuvant',
+  "No Surgery",
+  "Expired"            ,
+  NA
+  
+))
+n.levels <- length(level_order)
+
+setdiff(unique(c(sankey_data$node, sankey_data$next_node)), level_order)
+setdiff(level_order, unique(c(sankey_data$node, sankey_data$next_node)))
+
+sankey_data$node    <- factor(sankey_data$node, levels = level_order)
+sankey_data$next_node    <- factor(sankey_data$next_node, levels = level_order)
+
+
+
+node_counts <- sankey_data %>%
+  filter(!is.na(node)) %>%
+  dplyr::count(x, node, name = "n")
+
+
+sankey_data2 <- sankey_data %>%
+  left_join(node_counts, by = c("x", "node")) %>%
+  group_by(x) %>%
+  mutate(
+    pct = round(100 * n / sum(n[!is.na(node)]), 1),
+    node_label = ifelse(
+      is.na(node),
+      NA,
+      #sprintf("%s\nn=%d (%.1f%%)", node, n, pct)
+      sprintf("%s\nn=%d", node, n, pct)
+    )
+  ) %>%
+  ungroup()
+
+sankey_plot <- 
+ggplot(
+  sankey_data2,
+  aes(
+    x = x,
+    next_x = next_x,
+    node = node,
+    next_node = next_node,
+    fill = factor(node),
+    label = node_label
+  )
+) +
+  geom_sankey() +
+  geom_sankey_label(
+    size = 2.5,
+    fill = "white"
+  ) +
+
+  scale_fill_manual(values = pnw_palette(name="Starfish", n=n.levels )[sample(c(1:n.levels), n.levels, replace =F)], na.value = 'grey90') +  
+  
+
+  theme_sankey(base_size = 10)+
+  scale_x_discrete( position = "bottom", c(
+    'Type_of_Surgery',
+    'Adjuvant_Chemotherapy',
+    'Did_the_patient_recur',
+    'first_palliative',
+    'Status'
+  ), labels = c('Surgery','Adjuvant','Recurrence','1st-Line','At Last Timepoint')) +
+
+  theme(legend.position = "none", 
+        plot.background = element_blank(), 
+        panel.background = element_blank(),
+        plot.margin = unit(c(0, 0, 0, 0), "mm"),
+        
+        axis.title.x = element_blank())+ coord_cartesian(clip = "off")
+  
+sankey_plot
+
+ggsave(paste0(data.dir, "/results/fig/FIG1a.sankey.svg"),
+       plot =sankey_plot, 
+       device = "svg",width = 150, height = 85, units='mm' , dpi=72 )
+
+
+unique.drugs <- unique(c(alluvial$first_palliative_specific,alluvial$Adjuvant_Chemotherapy_Specific))
+drug.colors <- c(pnw_palette(name="Bay", n=length(unique.drugs) ))
+names(drug.colors) <- unique.drugs
+
+l1.n <- alluvial %>% group_by(first_palliative, first_palliative_specific) %>% tally()
+
+l1.n.plot <- 
+ggplot(l1.n %>%
+         filter(first_palliative %ni% c('No Palliative Treatment','No Recurrence Documented') & !is.na(first_palliative)), 
+       aes(y=reorder(first_palliative_specific, n), x=n)) + 
+  geom_bar(stat='identity',aes(fill=first_palliative_specific)) +
+  geom_point(size=4, color='black', fill='white',  shape=21) +
+  geom_text(aes(label=n), size = 2.5) +
+  scale_fill_manual(values = drug.colors , na.value = 'grey90') + 
+  guides(fill='none')+
+  theme_bw(base_size=12) +
+  theme(
+        panel.background =  element_blank(), 
+    plot.background =  element_blank(), 
+
+        axis.title.y = element_blank(), 
+        panel.grid = element_blank() 
+        
+  ) + labs(x='n of L1 Therapies')
+
+adjuvant.n <- alluvial %>% group_by(Adjuvant_Chemotherapy, Adjuvant_Chemotherapy_Specific) %>% tally()
+
+adjuvant.n.plot <- 
+ggplot(adjuvant.n %>%
+         filter(Adjuvant_Chemotherapy %ni% c('No Adjuvant','No Surgery') & 
+                  Adjuvant_Chemotherapy_Specific != 'No Adjuvant Chemo' &
+                  !is.na(Adjuvant_Chemotherapy) & Adjuvant_Chemotherapy_Specific != ''), 
+       aes(y=reorder(Adjuvant_Chemotherapy_Specific, n), x=n)) + 
+  geom_bar(stat='identity',aes(fill=Adjuvant_Chemotherapy_Specific)) +
+  geom_point(size=4, color='black', fill='white',  shape=21) +
+  geom_text(aes(label=n), size = 2.5) +
+  scale_fill_manual(values = drug.colors, na.value = 'grey90') + 
+  guides(fill='none')+
+  theme_bw(base_size=12) +
+  theme(
+    panel.background =  element_blank(), 
+    plot.background =  element_blank(), 
+        axis.title.y = element_blank(), 
+        panel.grid = element_blank() 
+        
+  ) + labs(x='n of Adjuvant Chemotherapies')
+
+regimen_plot <- 
+plot_grid(adjuvant.n.plot,NULL, l1.n.plot,
+          ncol = 1, align = 'hv', axis = "rlbt",
+          rel_heights = c(0.45,-0, 0.55))
+
+ggsave(paste0(data.dir, "/results/fig/FIGS1a.regimen_plot.svg"),plot =
+         regimen_plot
+, device = "svg",width = 75, height = 70, units = 'mm' )
+
+regimen_plot
+
+alluvial %>% group_by(Type_of_Surgery) %>% tally()
+alluvial %>% filter(Type_of_Surgery  == 'Initial Curative') %>% 
+  group_by(Adjuvant_Chemotherapy, Adjuvant_Chemotherapy_Specific) %>% tally() %>%
+  arrange(desc(n))
+
+alluvial$systemic_L1 <- NA
+alluvial$systemic_L1[ alluvial$first_palliative %in% c('Chemotherapy + Immunotherapy','Chemotherapy','Other Drug','Trial Drug')] <- T
+alluvial$systemic_L1[ alluvial$first_palliative %in% c('No Recurrence Documented','No Palliative Treatment')] <- F
+
+alluvial %>% group_by(systemic_L1) %>% tally()%>%
+  arrange(desc(n))
+alluvial %>% group_by(systemic_L1, first_palliative, first_palliative_specific) %>% tally()%>%
+  arrange(desc(n))
+
+```
+
+
+## Organize timeline
+Similar to the alluvial, we are organizing the data such that it follows a timeline, ie events are relative to date of diagnosis. These relative dates also downgrade the security level on the data. We can also check this way whether the tumor specimen we chose for the patient comes before or after treatment starts.
+
+```{r}
+
+sum(!is.na(all.clinic$Date_of_last_infusion_of_first_line_palliative_immunotherapy886))
+
+timeline <- all.clinic %>% dplyr::select(
+    Study_ID,
+    Date_of_radiological_diagnosis,
+    Date_of_first_histological_diagnosis,
+    
+    Date_Neoadjuvant_Chemotherapy_Started,
+    Date_Neoadjuvant_Chemotherapy_Ended,
+    
+    Date_of_Surgery,
+    
+    Adjuvant_Chemotherapy_Start_Date,
+    Adjuvant_Chemotherapy_End_Date,
+    
+    Date_of_recurrence,
+    
+    Date_of_first_infusion_of_first_line_palliative_chemotherapy,
+    Date_of_last_infusion_of_first_line_palliative_chemotherapy,
+    
+    Date_Durvalumab_maintenance_began,
+    
+    Date_of_disease_progression902,
+    Date_of_first_infusion_of_first_line_palliative_immunotherapy884,
+    Date_of_last_infusion_of_first_line_palliative_immunotherapy886,
+    
+    Date_palliative_radiation_started,
+    Date_palliative_radiation_ended,
+    Date_of_death,
+    Date_of_last_follow_up
+  ) %>% 
+  left_join(all.samples %>% dplyr::select(Study_ID, Date_of_tissue)) %>%
+  mutate(across(everything(), as.character)) 
+
+##Hop cohort is all treatment naive surgical specimen
+
+timeline <- timeline %>%
+  mutate(Date_of_tissue = if_else(
+    startsWith(Study_ID, "BTC"),
+    Date_of_Surgery,
+    Date_of_tissue
+  ))
+
+names(timeline)[names(timeline) == 'Date_of_disease_progression902'] <- 'Date_of_disease_progression'
+names(timeline)[names(timeline) == 'Date_of_first_infusion_of_first_line_palliative_immunotherapy884'] <- 'Date_of_first_infusion_of_first_line_palliative_immunotherapy'
+names(timeline)[names(timeline) == 'Date_of_last_infusion_of_first_line_palliative_immunotherapy886'] <- 'Date_of_last_infusion_of_first_line_palliative_immunotherapy'
+
+timeline <- timeline %>% mutate(across(everything(), ~ ifelse(. %in% c('','Not applicable','Unknown','Not available'), NA, .)))
+
+timeline <- cbind.data.frame(timeline[,c(1)], fix_excel_dates(df=timeline[,-c(1)]))
+
+timeline <- timeline %>%
+  mutate(earliest_diagnosis = pmin(Date_of_radiological_diagnosis, Date_of_first_histological_diagnosis, na.rm = TRUE)) %>%
+  mutate(latest_date = pmax(Date_of_last_follow_up, Date_of_death, na.rm = TRUE)) 
+
+timeline.rel <- timeline %>%
+  mutate(across(
+    .cols = where(lubridate::is.Date) & !matches("Study_ID|earliest_diagnosis"),
+    .fns = ~ as.numeric(. - earliest_diagnosis) / 30,
+    .names = "relative_{.col}"
+  )) %>%
+  dplyr::select(
+    starts_with("Study_ID") |
+      starts_with("relative_")
+  )
+
+
+timeline.rel <- timeline.rel %>%
+  mutate(across(where(is.numeric), ~ ifelse(. < -10, NA, .)))
+
+timeline.rel <- timeline.rel %>%
+  mutate(
+    relative_Date_of_last_follow_up = if_else(
+      !is.na(relative_Date_of_death) &
+        !is.na(relative_Date_of_last_follow_up) &
+        relative_Date_of_last_follow_up < relative_Date_of_death,
+      relative_Date_of_death,
+      relative_Date_of_last_follow_up
+    )
+  )
+
+
+timeline.rel$relative_Date_of_last_follow_up[timeline.rel$relative_Date_of_last_follow_up < 0 ] <- NA
+
+write.table( timeline.rel,  
+            file = file.path(data.dir,"/results/timeline.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+
+```
+
+## treatment impact 
+
+```{r}
+
+all.samples.in <- fread(file.path(data.dir,"/results/samples.info.txt")) 
+
+if(!('tissue_before_chemo' %in% names(all.samples.in)) ){
+timeline <- timeline %>%
+  rowwise() %>%
+  mutate(
+    tissue_before_chemo = case_when(
+      is.na(Date_of_tissue) ~ NA,
+
+      all(is.na(c(
+        Date_Neoadjuvant_Chemotherapy_Started,
+        Adjuvant_Chemotherapy_Start_Date,
+        Date_of_first_infusion_of_first_line_palliative_chemotherapy
+      ))) ~ NA,
+
+      TRUE ~ all(
+        c(
+          Date_of_tissue <= Date_Neoadjuvant_Chemotherapy_Started,
+          Date_of_tissue <= Adjuvant_Chemotherapy_Start_Date,
+          Date_of_tissue <= Date_of_first_infusion_of_first_line_palliative_chemotherapy
+        ),
+        na.rm = TRUE
+      )
+    ),
+
+    tissue_before_immuno = case_when(
+      is.na(Date_of_tissue) ~ NA,
+      is.na(Date_of_first_infusion_of_first_line_palliative_immunotherapy) ~ NA,
+      TRUE ~ Date_of_tissue <= Date_of_first_infusion_of_first_line_palliative_immunotherapy
+    )
+  ) %>%
+  mutate(
+    tissue_before_chemo  = ifelse(is.na(tissue_before_chemo),  "undetermined", as.character(tissue_before_chemo)),
+    tissue_before_immuno = ifelse(is.na(tissue_before_immuno), "undetermined", as.character(tissue_before_immuno))
+  ) %>%
+  ungroup()
+
+  all.samples <- timeline %>% dplyr::select(Study_ID, tissue_before_chemo, tissue_before_immuno) %>%
+    full_join(all.samples.in, by=c('Study_ID'='Study_ID'))
+  
+}
+
+sample.type.tally <- all.samples  %>%
+  count(tissue_before_chemo, tissue_before_immuno, Procedure_Type) %>%
+  complete(
+    tissue_before_chemo = c("TRUE", "FALSE", "undetermined"),
+    tissue_before_immuno = c("TRUE", "FALSE", "undetermined"),
+    Procedure_Type,
+    fill = list(n = 0)
+  )
+
+sample.type.tally$tissue_before_chemo[sample.type.tally$tissue_before_chemo == 'TRUE'] <- 'treatment naive'
+sample.type.tally$tissue_before_chemo[sample.type.tally$tissue_before_chemo == 'FALSE'] <- 'post-treatment'
+
+sample.type.tally$Procedure_Type[sample.type.tally$Procedure_Type == "Surgical Resection"] <- "Surgical\nResection"
+sample.type.tally$Procedure_Type[is.na(sample.type.tally$Procedure_Type)] <- "undetermined"
+
+sample.type.tally$procedure <- factor(sample.type.tally$Procedure_Type, levels=c("Surgical\nResection","Biopsy","undetermined"))
+
+time_of_specimen.plt <- 
+      ggplot(sample.type.tally , aes(x = procedure, y = n)) +
+         geom_bar(stat = 'identity', aes(fill = tissue_before_chemo), position = position_dodge()) +
+         theme_bw(base_size = 10) +
+         theme(
+           axis.title.x = element_blank(),
+           plot.background = element_blank(),
+           panel.background = element_blank(),
+           panel.grid = element_blank(),
+           axis.ticks = element_blank(),
+           panel.border = element_blank(),
+           legend.margin = margin(0, 0, 0, 0),  
+           legend.box.margin = margin(0, 0, 0, 0), 
+           plot.margin = unit(c(0, 0, 0, 0), "mm"),
+           legend.key.size = unit(0.5, "lines"),  
+           legend.text = element_text(size = 10),     
+           legend.title = element_blank(),
+           legend.position = 'bottom'
+           
+         ) +
+         scale_fill_manual(values = c('cornflowerblue', 'forestgreen','grey80')) +
+         guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+       
+time_of_specimen.plt
+
+ggsave(paste0(data.dir, "/results/fig/FIGS1b-2.time_of_specimen.svg"),plot =
+         time_of_specimen.plt
+       , device = "svg",width = 65, height = 60, units = 'mm', dpi=72 )
+
+message('Half of tumor specimens (n = ',
+        sum(sample.type.tally$n[sample.type.tally$tissue_before_chemo == 'treatment naive'], na.rm=T),', ',
+        round(sum(sample.type.tally$n[sample.type.tally$tissue_before_chemo == 'treatment naive'], na.rm=T)/
+                sum(sample.type.tally$n[sample.type.tally$tissue_before_chemo %in% c('treatment naive',"post-treatment")], na.rm=T), 2)*100,
+        '%) were conclusively treatment-naive')
+
+
+```
+
+## Data Funnel
+
+```{r}
+
+all.n <- all.samples %>%  tally() %>% ungroup() %>% dplyr::select(n)
+
+filt.1.n <- all.samples %>% filter( FF == "FF" ) %>%
+  group_by( FF) %>% tally()  %>% ungroup() %>% dplyr::select(n)
+
+filt.2.n <- all.samples %>% group_by(tissue_before_chemo, FF) %>% tally() %>%
+  filter(FF == "FF" & tissue_before_chemo == T ) %>% 
+  ungroup() %>%  dplyr::select(n)
+
+filt.3 <- all.samples %>% 
+  filter(FF == "FF" & tissue_before_chemo == T & Sample_Progression == 'Primary') 
+
+filt.3.n <- filt.3 %>% group_by(tissue_before_chemo, FF, Sample_Progression) %>% 
+  tally() %>% ungroup() %>% dplyr::select(n) 
+
+filt.4.n <- all.samples %>% group_by(tissue_before_chemo, FF, rna, Sample_Progression) %>% tally() %>%
+  filter(FF == "FF" & tissue_before_chemo == T & Sample_Progression == 'Primary' & rna == T) %>% 
+ ungroup() %>%  dplyr::select(n)
+
+filt.n <- rbind.data.frame(
+  cbind.data.frame('filter'='WGS of tumors' , all.n),
+  cbind.data.frame('filter'='fresh frozen' , filt.1.n),
+  cbind.data.frame('filter'='treatment-naive' , filt.2.n),
+  cbind.data.frame('filter'='primary tumor' , filt.3.n),
+  cbind.data.frame('filter'='+ RNA' , filt.4.n)
+)
+
+filt.n$label <- paste0(filt.n$filter, '\nn = ',filt.n$n)
+
+data.funnel.plot <- 
+ggplot(filt.n, aes(x = reorder(filter, n), y = 0)) +
+  geom_tile(
+    aes(height = n, fill = filter %in% c('primary tumor','+ RNA')),
+    width = 0.95,color='black'
+
+  ) +
+  geom_text(
+    aes(label = label),
+    lineheight = 0.8  # default is ~1.2
+  ) +
+  coord_flip() +
+  theme_void(base_size = 10) +
+  scale_fill_manual(values = c('white', 'gold')) +
+  guides(fill='none')
+
+data.funnel.plot
+
+ggsave(paste0(data.dir, "/results/fig/FIG1d.data.funnel.plot.svg"),plot =
+         data.funnel.plot
+       , device = "svg",width = 120, height = 40, units = 'mm', dpi=72 )
+
+##TODO: add 'gold' T/F to timeline
+
+all.samples$gold <- F
+all.samples$gold[all.samples$Study_ID %in% filt.3$Study_ID] <- T
+
+all.samples %>% group_by(rna, gold) %>% tally() %>%
+  arrange(desc(gold), desc(rna))
+
+if( !('gold' %in% names(all.samples.in)) ){
+
+  write.table( all.samples,  
+              file = file.path(data.dir,"/results/samples.info.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+
+}
+
+  write.table( all.samples %>% dplyr::select(BTC_ID,	Sample,	LCM,	FF,	rna,	previous,	location,	Sample_Progression,	Procedure_Type),  
+              file = file.path(data.dir,"/results/tableS7A.samples.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+
+
+```
+
+

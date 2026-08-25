@@ -6,6 +6,7 @@ Data can be downloaded from [geo](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi
 
 ```{r}
 
+suppressWarnings(
 suppressPackageStartupMessages({
   library(dplyr)
   library(data.table)
@@ -22,17 +23,18 @@ suppressPackageStartupMessages({
   library(stringr)
   library(tidyr)
 })
+)
 
 '%ni%' <- function(x,y)!('%in%'(x,y))
 
-basedir = '~/Documents/scripts/github/btc-ccs/'
-secdir = '~/Documents/scripts/github/evolution/'
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
 
-source(paste0(basedir,"/bin/BTC.functions.R"))
-source(paste0(basedir,"/bin/scrna_fxn.R"))
+source(paste0(code.dir,"/bin/BTC.functions.R"))
+source(paste0(code.dir,"/bin/scrna_fxn.R"))
 
 this.cohort = 'zhang_2020'
-main_dir <- file.path(secdir, '/source_data/scrna/',this.cohort)
+main_dir <- file.path(data.dir, '/source_data/scrna/',this.cohort)
 setwd(main_dir)
 
 create.seurat=F
@@ -119,9 +121,15 @@ if(create.seurat){
   
   saveRDS(combined,file.path(main_dir,'/zhang.rds'))
 } else {
+  
   combined <- readRDS(file.path(main_dir,'/zhang.rds'))
   
 }
+```
+
+## Explore dataset at a high level
+
+```{r}
 
 
 # perform steps in order on the integrate data 
@@ -144,7 +152,6 @@ if(find.cell.ids.denovo){
   
   cell_marker_list <- get_cell_marker_list()
   TOP_N <- 50
-  
   
   combined <- PrepSCTFindMarkers(combined)
   markers <- FindAllMarkers(combined, only.pos = TRUE,
@@ -239,10 +246,10 @@ ggplot(df, aes(x = umap_1, y = umap_2)) +
 ```{r}
 
 
-y_order.convert <- fread( file.path(basedir,'/results/NMF.conversion.txt' ))
+y_order.convert <- fread( file.path(data.dir,'/results/whole.NMF.conversion.txt' ))
 y_order.convert$og <- gsub('sig','V', y_order.convert$og)
 
-w.matrix <- read.csv(file.path(basedir,'/results/W_matrix.txt'), row.names= 1)
+w.matrix <- read.csv(file.path(data.dir,'/results/whole.W_matrix.txt'), row.names= 1)
 genes <- row.names(w.matrix)
 w.matrix <- w.matrix %>% dplyr::select(all_of(y_order.convert$og))
 names(w.matrix) <- y_order.convert$new
@@ -250,7 +257,7 @@ w.matrix <- as.matrix(w.matrix)
 row.names(w.matrix) <- genes
 
 
-gene_set <- fread(file.path(basedir,'/source_data/fgs.txt'))
+gene_set <- fread(file.path(data.dir,'/source_data/fgs.txt'))
 
 tpm_data <- convert_w_to_tpm_like(w.matrix, gene_set)
 gene_sets <- make_gene_sets(tpm_data, ntile=0.9)
@@ -326,22 +333,8 @@ df$donor[df$sample_id %in% c( "ICC_23_Adjacent","ICC_23_Tumor")] <- '23'
 df$donor[df$sample_id %in% c( "ICC_24_Tumor1","ICC_24_Tumor2")] <- '24'
 df$donor[df$sample_id %in% c( "ICC_25_Adjacent")] <- '25'
 
-color.set <- c(
-  'sig.1' = 'grey30',
-  'sig.7' = 'black',
-  
-  
-  'sig.2' = 'lightblue',
-  'sig.6' = 'cornflowerblue',
-  
-  'sig.5' = "forestgreen" ,
-  'sig.8' = '#0A6F99' ,               #"#04597C" ,
-  
-  'sig.3' = 'yellow',
-  'sig.4' = '#D98E04'            #"#EDA71A"
-  
-  
-)
+color.set <-    pnw_palette(name="Sailboat", n=8 )
+names(color.set) <- paste0('sig.',c(8:1))
 
 
 ggplot(df , aes(x = umap_1, y = umap_2)) +
@@ -403,17 +396,19 @@ tumour_candidate_clusters <- c(0,1,4)
                          
                          
       ) + 
-         guides(color='none') + 
+        
          theme(
            panel.border = element_blank(),
            plot.margin = margin(t = 0, r = 0, b = 0, l = 0),
            plot.background = element_blank()
          ) 
        
-
+```
 
 
 #### subset ####
+
+```{r}
 
 subset_obj <- subset(combined, subset = seurat_clusters %in% tumour_candidate_clusters & 
                        sample_id %in% c('ICC_18_Tumor','ICC_20_Tumor','ICC_23_Tumor','ICC_24_Tumor1','ICC_24_Tumor2') 
@@ -447,40 +442,40 @@ chol.centroids <- df.sub %>%
 
 
 
-     ggplot(df.sub , aes(x = umap_1, y = umap_2)) +
-         
-         geom_point(size=3.5, color = 'black') + #, shape=disease
-         geom_point(size=2.5, color = 'white') + #, shape=disease
-         
-         
-         geom_point(size=1.5, aes(color = Top_NMF)) + #, shape=disease
-         geom_label_repel(data = chol.centroids, aes(x = x_centroid, y = y_centroid, label = sample_id, fill=condition), color='white', 
-                          size=2,   box.padding = 0.5, force = 0.5, max.time = 4,  min.segment.length = 0, max.overlaps =15) +
-         
-         
-         
-         theme_void() +  # removes all axes and background
-         scale_fill_manual(values =  
-                             c(
-                               
-                               'tumor' = 'black',
-                               'adjacent' = 'grey80'
-                               
-                             ), na.value = 'grey'
-         ) + 
-       scale_color_manual(values =  
-                            color.set, na.value = 'grey'
-                          
-                          
-       ) + 
-           #guides(color='none')+
-         #  scale_fill_manual(values =  pnw_palette(name="Bay", n=12 ) ) + 
-         theme(
-           panel.border = element_blank(),
-           legend.position = 'bottom',
-           plot.margin = margin(t = 0, r = 0, b = 0, l = 0),
-           plot.background = element_blank()
-         ) 
+ggplot(df.sub , aes(x = umap_1, y = umap_2)) +
+   
+   geom_point(size=3.5, color = 'black') + #, shape=disease
+   geom_point(size=2.5, color = 'white') + #, shape=disease
+   
+   
+   geom_point(size=1.5, aes(color = Top_NMF)) + #, shape=disease
+   geom_label_repel(data = chol.centroids, aes(x = x_centroid, y = y_centroid, label = sample_id, fill=condition), color='white', 
+                    size=2,   box.padding = 0.5, force = 0.5, max.time = 4,  min.segment.length = 0, max.overlaps =15) +
+   
+   
+   
+   theme_void() +  # removes all axes and background
+   scale_fill_manual(values =  
+                       c(
+                         
+                         'tumor' = 'black',
+                         'adjacent' = 'grey80'
+                         
+                       ), na.value = 'grey'
+   ) + 
+ scale_color_manual(values =  
+                      color.set, na.value = 'grey'
+                    
+                    
+ ) + 
+     #guides(color='none')+
+   #  scale_fill_manual(values =  pnw_palette(name="Bay", n=12 ) ) + 
+   theme(
+     panel.border = element_blank(),
+     legend.position = 'bottom',
+     plot.margin = margin(t = 0, r = 0, b = 0, l = 0),
+     plot.background = element_blank()
+   ) 
 
 ```
 
@@ -583,7 +578,7 @@ if(run.infercnv){
 ```{r}
 
 
-cytoBand <- fread(file.path(basedir,'/source_data/cytoBand.txt'), na.strings = '') %>% 
+cytoBand <- fread(file.path(data.dir,'/source_data/cytoBand.txt'), na.strings = '') %>% 
   filter(!is.na(Chromosome))
 
 cytoBand<- separate(cytoBand, col = Chromosome, into = c('band','period'), sep = '\\.', remove=F)
@@ -596,12 +591,12 @@ cytoBand <- cytoBand %>%
   ) %>%
   dplyr::select(-parts) %>% filter(!is.na(arm) & arm %ni% c('Xq','Xp','Yp','Yq'))
 
-full_cnv_model <- readRDS(file.path(basedir,'/results/cnv.model.rds'))
+full_cnv_model <- readRDS(file.path(data.dir,'/results/cnv.model.rds'))
 
 first.sample = T
 for(this.sample in unique(subset_obj$sample_id) ){
   
-  infercnv.path <- paste0(secdir,"/source_data/scrna/zhang_2020/infercnv/",this.sample,"/",this.sample,'.cnv_matrix.tsv')
+  infercnv.path <- paste0(data.dir,"/source_data/scrna/zhang_2020/infercnv/",this.sample,"/",this.sample,'.cnv_matrix.tsv')
   
   if(file.exists(infercnv.path)){
     
@@ -659,7 +654,7 @@ immune_celltypes <- c( "CD4+ memory T cell"    ,    "CD8+ T cell" ,
 df.cnv$meta_celltype <- 'epithelial'
 df.cnv$meta_celltype[df.cnv$cluster_celltypes %in%  immune_celltypes] <- 'immune'
 
-THRESHOLD = 0.34
+THRESHOLD = 0.5
 
 ggplot(df.cnv , aes(x=cnv_scores, fill=Top_NMF)) +
   geom_vline(xintercept = 1, color="black",  linetype='longdash')+
@@ -695,12 +690,12 @@ ggplot(df.cnv %>% filter(!is.na(donor)), aes(x=prob, fill=Top_NMF)) +
                       color.set, na.value = 'grey'
   ) 
 
-df.cnv$gCMS <- NA
-df.cnv$gCMS[df.cnv$prob > 0.8 ] <- 'CMS-A'
-df.cnv$gCMS[df.cnv$prob < 0.2 ] <- 'CMS-B'
+df.cnv$gCCS <- NA
+df.cnv$gCCS[df.cnv$prob > 0.8 ] <- 'CCS-A'
+df.cnv$gCCS[df.cnv$prob < 0.2 ] <- 'CCS-B'
 
 
-df.cnv.filt <- df.cnv[!is.na(df.cnv$gCMS) & df.cnv$meta_celltype ==  'epithelial' & df.cnv$sample_id != 'ICC_25_Adjacent',]
+df.cnv.filt <- df.cnv[!is.na(df.cnv$gCCS) & df.cnv$meta_celltype ==  'epithelial' & df.cnv$sample_id != 'ICC_25_Adjacent',]
 
 
 ```
@@ -712,7 +707,8 @@ df.cnv.filt <- df.cnv[!is.na(df.cnv$gCMS) & df.cnv$meta_celltype ==  'epithelial
 
 tumour.subset_obj <- subset(subset_obj, cells = df.cnv.filt$barcode) 
 
-whole.estimate <- get_cms_from_pseudobulk(tumour.subset_obj)
+whole.estimate <- get_cms_from_pseudobulk(tumour.subset_obj, 
+                                    basedir = '~/Documents/scripts/github/btc-ccs-data/')
 whole.estimate$sample_id <- rownames(whole.estimate)
 
 meta <- tumour.subset_obj@meta.data
@@ -734,7 +730,8 @@ for(this.boot in c(1:100)){
   boot.subset <- subset(tumour.subset_obj, cells = sampled_cells)
   
   suppressMessages(
-    boot.estimate <- get_cms_from_pseudobulk(boot.subset)
+    boot.estimate <- get_cms_from_pseudobulk(boot.subset, 
+                                    basedir = '~/Documents/scripts/github/btc-ccs-data/')
   )
   
   boot.estimate$sample_id <- rownames(boot.estimate)
@@ -786,11 +783,11 @@ tsp.confidence$disease <- 'iCCA'
    
    theme_bw(base_size=10) +scale_color_manual(values =  
                                                 c(
-                                                  "CMS-A"="#04597C", "CMS-B"="#EDA71A"
+                                                  "CCS-A"="#04597C", "CCS-B"="#EDA71A"
                                                   
                                                   
                                                 ), na.value = 'grey'
-   ) +labs(y='% of TSP for CMS-A')+ theme(panel.grid = element_blank(), 
+   ) +labs(y='% of TSP for CCS-A')+ theme(panel.grid = element_blank(), 
                                           axis.ticks.x = element_blank(),
                                           axis.title.x = element_blank(),
                                           axis.text.x = element_blank(),
@@ -842,10 +839,10 @@ Combine the cell-level genetic CCS calls to the pseudo-bulk eCCS calls and to th
 ```{r}
  
  
- tumour.cnv.arms <- df.cnv.filt %>%  dplyr::select(c("donor","sample_id","barcode","gCMS","prob") |  starts_with("arm.") )
+ tumour.cnv.arms <- df.cnv.filt %>%  dplyr::select(c("donor","sample_id","barcode","gCCS","prob") |  starts_with("arm.") )
  
  tumour.cnv.arms <- tumour.cnv.arms %>% 
-   reshape2::melt(id.vars=c("donor","sample_id",'barcode','prob','gCMS'))
+   reshape2::melt(id.vars=c("donor","sample_id",'barcode','prob','gCCS'))
  
  tumour.cnv.arms$band <- gsub("arm.","", tumour.cnv.arms$variable)
  
@@ -854,54 +851,54 @@ Combine the cell-level genetic CCS calls to the pseudo-bulk eCCS calls and to th
      arm = substr(band, nchar(band), nchar(band)),
      chr = substr(band, 1, nchar(band) - 1)
    ) %>%
-   dplyr::select(donor,sample_id,barcode, prob, gCMS, chr, arm,band, value)
+   dplyr::select(donor,sample_id,barcode, prob, gCCS, chr, arm,band, value)
  
  model.coeff <- data.frame('band'=gsub('arm.','',names(full_cnv_model$coefficients))) %>%  mutate(
    arm = substr(band, nchar(band), nchar(band)),
    chr = substr(band, 1, nchar(band) - 1)
  ) %>%   select(chr, arm, band)
  
- tumour.cnv.model.arms <- tumour.cnv.arms %>% filter(band %in% model.coeff$band & !is.na(gCMS))
+ tumour.cnv.model.arms <- tumour.cnv.arms %>% filter(band %in% model.coeff$band & !is.na(gCCS))
  tumour.cnv.model.arms$Band <- factor(tumour.cnv.model.arms$band, levels = paste0(rep(1:21, each = 2), c("p", "q")) )
  
  
  tumour.cnv.model.arms %>%
    group_by(sample_id) %>%
    summarise(
-     most_common = names(sort(table(gCMS), decreasing = TRUE))[1],
-     percentage = max(table(gCMS)) / n() * 100
+     most_common = names(sort(table(gCCS), decreasing = TRUE))[1],
+     percentage = max(table(gCCS)) / n() * 100
    ) %>% summarise(mean_percentage=mean(percentage))
  
  
  
- tumour.cnv.model.arms$eCMS <- NA
- tumour.cnv.model.arms$eCMS[tumour.cnv.model.arms$donor %in% tsp.confidence$donor[tsp.confidence$rna_class == 'CMS-A']] <- 'CMS-A'
- tumour.cnv.model.arms$eCMS[tumour.cnv.model.arms$donor %in% tsp.confidence$donor[tsp.confidence$rna_class == 'CMS-B']] <- 'CMS-B'
+ tumour.cnv.model.arms$eCCS <- NA
+ tumour.cnv.model.arms$eCCS[tumour.cnv.model.arms$donor %in% tsp.confidence$donor[tsp.confidence$rna_class == 'CCS-A']] <- 'CCS-A'
+ tumour.cnv.model.arms$eCCS[tumour.cnv.model.arms$donor %in% tsp.confidence$donor[tsp.confidence$rna_class == 'CCS-B']] <- 'CCS-B'
  
- tumour.cnv.model.arms.match <- tumour.cnv.model.arms[!is.na(tumour.cnv.model.arms$eCMS) &  !is.na(tumour.cnv.model.arms$gCMS),] #[tumour.cnv.model.arms$eCMS == tumour.cnv.model.arms$gCMS,]
+ tumour.cnv.model.arms.match <- tumour.cnv.model.arms[!is.na(tumour.cnv.model.arms$eCCS) &  !is.na(tumour.cnv.model.arms$gCCS),] #[tumour.cnv.model.arms$eCMS == tumour.cnv.model.arms$gCMS,]
  tumour.cnv.model.arms.match <- tumour.cnv.model.arms %>% filter(sample_id != 'ICC_25_Adjacent')
  
  tumour.cnv.model.arms.match$Donor <- factor(tumour.cnv.model.arms.match$donor, levels = donor.confidence$donor[order(donor.confidence$mean.conf)])
  
  
  df.cms.n.filt <- df.cms %>% filter(barcode %in% tumour.cnv.model.arms.match$barcode) %>% 
-   group_by(sample_id, donor, condition, rna_class, confidence.polarized, Top_NMF,gCMS ) %>% tally() 
- df.cms.n.filt$n[df.cms.n.filt$gCMS == 'CMS-A'] <- -df.cms.n.filt$n[df.cms.n.filt$gCMS == 'CMS-A']
+   group_by(sample_id, donor, condition, rna_class, confidence.polarized, Top_NMF,gCCS ) %>% tally() 
+ df.cms.n.filt$n[df.cms.n.filt$gCCS == 'CCS-B'] <- -df.cms.n.filt$n[df.cms.n.filt$gCCS == 'CCS-B']
  
- df.cms.n.filt$esig <- factor(df.cms.n.filt$Top_NMF, levels = paste0('sig.',c(1:10)))
+ df.cms.n.filt$esig <- factor(df.cms.n.filt$Top_NMF, levels = paste0('sig.',c(1:8)))
  
  df.cms.n.filt$disease <- 'iCCA'
  df.cms.n.filt$Donor <- factor(df.cms.n.filt$donor, levels = donor.confidence$donor[order(donor.confidence$mean.conf)])
  
- df.cms.n.filt$gCMS.f <- factor(paste0('g',df.cms.n.filt$gCMS), levels = rev(c('gCMS-A','gCMS-B')))
+ df.cms.n.filt$gCCS.f <- factor(paste0('g',df.cms.n.filt$gCCS), levels = rev(c('gCCS-B','gCCS-A')))
  
  zhang.nmf.tally.plot <- 
  plot_grid(
    
  ggplot(tsp.confidence %>% filter(sample_id != 'ICC_25_Adjacent'), aes(x=sample_id,  color=rna_class)) + 
    
-   geom_hline(yintercept = 75, color='grey', linetype='dotted')+
-   geom_hline(yintercept = 25, color='grey', linetype='dotted')+
+   geom_hline(yintercept = 6/16*100, color='grey', linetype='dotted')+
+   geom_hline(yintercept = 10/16*100, color='grey', linetype='dotted')+
    
    geom_errorbar(aes(ymin = ci_low*100, ymax = ci_high*100), width = 0)  +
    
@@ -912,11 +909,11 @@ Combine the cell-level genetic CCS calls to the pseudo-bulk eCCS calls and to th
    
    theme_bw(base_size=10) +scale_color_manual(values =  
                                                 c(
-                                                  "CMS-A"="#04597C", "CMS-B"="#EDA71A"
+                                                  "CCS-A"="#04597C", "CCS-B"="#EDA71A"
                                                   
                                                   
                                                 ), na.value = 'grey'
-   ) +labs(y='% of TSP')+ theme(panel.grid = element_blank(), 
+   ) +labs(y='% of TSP\nin pseudobulk')+ theme(panel.grid = element_blank(), 
                                           axis.ticks.x = element_blank(),
                                           axis.title.x = element_blank(),
                                           axis.text.x = element_blank(),
@@ -933,10 +930,10 @@ Combine the cell-level genetic CCS calls to the pseudo-bulk eCCS calls and to th
  
  ggplot(df.cms.n.filt, aes(x=sample_id, y=n, fill=esig)) + 
    geom_bar(stat='identity')+
-   facet_grid(gCMS.f~Donor , space='free',scales='free' ) +
+   facet_grid(gCCS.f~Donor , space='free',scales='free' ) +
    theme_bw(base_size=10)+ 
    theme(panel.grid = element_blank(), 
-         legend.position = 'bottom',
+         #legend.position = 'bottom',
          legend.background = element_blank(),
          legend.text = element_text(size = 6), 
          legend.key.size = unit(0.5, "lines"),     
@@ -944,7 +941,7 @@ Combine the cell-level genetic CCS calls to the pseudo-bulk eCCS calls and to th
          panel.background = element_blank(),
          legend.title = element_blank(),
          
-         axis.title.x =  element_blank(),
+         
          axis.text.x =  element_blank(),
          axis.ticks.x =  element_blank(),
          
@@ -952,20 +949,20 @@ Combine the cell-level genetic CCS calls to the pseudo-bulk eCCS calls and to th
          panel.spacing = unit(0, "lines"),
          strip.text = element_blank(),
          strip.background = element_blank()
-   )+ labs(y='n cells')+
-   guides(color='none',fill='none')+
+   )+ labs(y='n cells', x='Zhang et al. samples')+
+   scale_y_continuous(breaks=c(-1000,-500,0,500,1000),labels = c(1000,500,0,500,1000)) +
    scale_fill_manual(values =  
                        color.set, na.value = 'grey'
    )
  
  ,ncol = 1, align = 'hv', axis = "rlbt", 
- rel_heights =c(0.3,-0.1,0.7)) 
+ rel_heights =c(0.3,-0.15,0.7)) 
  
 zhang.nmf.tally.plot
  
-ggsave(file.path(basedir, "/results/fig/FIGS3e.zhang.nmf.tally.svg"), plot = 
+ggsave(file.path(data.dir, "/results/fig/FIGS3i.zhang.nmf.tally.svg"), plot = 
  zhang.nmf.tally.plot
-, device = "svg", height = 60,width = 40, units = 'mm', dpi=72 )
+, device = "svg", height = 60,width = 65, units = 'mm', dpi=72 )
 
  chol.centroids.donor <- df.sub %>%
    group_by(donor) %>%

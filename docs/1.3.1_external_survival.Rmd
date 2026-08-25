@@ -32,11 +32,11 @@ suppressPackageStartupMessages({
 
 `%ni%` <- Negate(`%in%`)
 
-basedir = '~/Documents/scripts/github/btc-ccs/'
-secdir = '~/Documents/scripts/github/evolution/'
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
 
-source( file.path(basedir, "bin/BTC.functions.R"))
-classifier <- readRDS(file.path(basedir,'/results/tps.classifier.rds'))
+source( file.path(code.dir, "bin/BTC.functions.R"))
+classifier <- readRDS(file.path(data.dir,'/results/tps.classifier.rds'))
 
 ```
 
@@ -45,9 +45,9 @@ Data can be downloaded in supplementary materials from [Dong et al. 2022](https:
 
 ```{r}
 
-dong.patient.info <- read_excel(file.path(secdir,"/source_data/dong_2022_S1.xlsx"), sheet = 2, skip = 1)
-dong.exome.info <- read_excel(file.path(secdir,"/source_data/dong_2022_S1.xlsx"), sheet = 3, skip = 1)
-dong.rna.info <- read_excel(file.path(secdir,"/source_data/dong_2022_S1.xlsx"), sheet = 4, skip = 1)
+dong.patient.info <- read_excel(file.path(data.dir,"/source_data/dong_2022_S1.xlsx"), sheet = 2, skip = 1)
+dong.exome.info <- read_excel(file.path(data.dir,"/source_data/dong_2022_S1.xlsx"), sheet = 3, skip = 1)
+dong.rna.info <- read_excel(file.path(data.dir,"/source_data/dong_2022_S1.xlsx"), sheet = 4, skip = 1)
 
 colnames(dong.exome.info)   <- gsub(" ", "_", gsub("[^[:alnum:] ]", "", colnames(dong.exome.info)))                
 dong.exome.info$PatientID <- paste0('DONG_',dong.exome.info$SampleID)
@@ -61,7 +61,9 @@ dong.rna.mat <- as.matrix(dong.rna.info[,-1])
 row.names(dong.rna.mat) <- dong.rna.info$genes
 
 dong.predicted.w.score <- 
-  predict_TSP_with_confidence(tpm_matrix=dong.rna.mat, tsp_classifier=classifier, confidence_cutoff = 0.75  )
+  predict_TSP_with_confidence(tpm_matrix=dong.rna.mat, 
+                              tsp_classifier=classifier, 
+                              confidence_cutoff = 10/16  )
 
 dong.predicted.w.score$PatientID <- rownames(dong.predicted.w.score)
 
@@ -80,27 +82,32 @@ dong.unresectable$TNM_stage.bin[dong.unresectable$TNM_stage %in% c('IIIA','IIIB'
 
 write.table(
   dong.predicted.w.score,
-  file = file.path(basedir, "/results/dong.eCMS.txt"),
+  file = file.path(data.dir, "/results/dong.eCCS.txt"),
   row.names = T, quote = FALSE, sep = "\t"
 )
+
+dong.unresectable$OSevent[dong.unresectable$OS_overall_survival_day > (5 * 365)] <- 0
+dong.unresectable$OS_overall_survival_day[dong.unresectable$OS_overall_survival_day > (5 * 365)] <- (5 * 365)
 
 dong.os.cms <- survfit(Surv(OS_overall_survival_day/30, OSevent) ~ rna_class , 
                              data = dong.unresectable )
 
-cox.os.cms.dong <- coxph(Surv(OS_overall_survival_day, OSevent) ~ rna_class + TNM_stage.bin, 
-                         data =  dong.unresectable )
+sum(dong.os.cms$n)
 
-cox.os.cms.dong
+surv_pvalue(dong.os.cms, data = dong.unresectable)
+
+dong.med.surv <- surv_median(dong.os.cms)
+dong.med.surv
+
 
 os.cms.dong.plot <- ggsurvplot(dong.os.cms, data = dong.unresectable, 
-           pval = F, 
+           pval = F, risk.table = F,  
            conf.int = T,
-           #xlim = c(0,100),
            legend="none", xlab="Months after surgery",  
-                                     risk.table = F,  # Adds number at risk table
-                                    # surv.median.line = "hv", 
-                                     palette =  c("#04597C","#EDA71A")
+           surv.median.line = "hv", 
+           palette =  c("#04597C","#EDA71A")
 )
+
 
 os.cms.dong.plot.g <- os.cms.dong.plot$plot
 os.cms.dong.plot.g <- 
@@ -111,14 +118,30 @@ os.cms.dong.plot.g <-
         panel.background = element_blank()) +
   scale_x_continuous(breaks = seq(0, max(dong.unresectable$OS_overall_survival_day/30), by = 12))
 
+os.cms.dong.plot.g <- os.cms.dong.plot.g +
+  annotate("text",
+           x = dong.med.surv$median, y = 0.05,
+           label = paste0(gsub("rna_class=", "", dong.med.surv$strata), 
+                          ":\n", round(dong.med.surv$median, 1), " mo"),
+           hjust = 1.2, vjust = 0.25, size = 3,
+           color = c("#04597C", "#EDA71A"))
+
 os.cms.dong.plot.g
 
-plot.it = T
-if(plot.it){
-  
-  ggsave(paste0(basedir, "/results/fig/FIGS2F.cms.os.dong.svg"),plot =os.cms.dong.plot.g
-         , device = "svg",width = 67, height = 65, units = 'mm' )
-}
+ggsave(paste0(data.dir, "/results/fig/FIG2C.ccs.os.dong.svg"),
+       plot =os.cms.dong.plot.g
+, device = "svg",width = 67, height = 50, units = 'mm' )
+
+cox.os.cms.dong <- coxph(Surv(OS_overall_survival_day/30, OSevent) ~ rna_class + TNM_stage.bin, 
+                         data =  dong.unresectable )
+
+cox.os.cms.dong
+
+```
+
+## Dong TP53+ cases
+
+```{r}
 
 tp53_cases <- dong.exome.info$PatientID[ dong.exome.info$Gene == 'TP53']
 
@@ -127,11 +150,20 @@ dong.tp53wt <- dong.unresectable %>% filter(PatientID %ni% tp53_cases)
 dong.os.cms.tp53wt <- survfit(Surv(OS_overall_survival_day/30, OSevent) ~ rna_class , 
                        data = dong.tp53wt )
 
+sum(dong.os.cms.tp53wt$n)
+
+surv_pvalue(dong.os.cms.tp53wt, data = dong.tp53wt)
+
+dong.med.surv <- surv_median(dong.os.cms.tp53wt)
+dong.med.surv
+
 dong.unresectable$tp53 <- 'wt'
 dong.unresectable$tp53[dong.unresectable$PatientID %in% tp53_cases] <- 'TP53+'
 
 cox.os.cms.dong.tp53 <- coxph(Surv(OS_overall_survival_day, OSevent) ~ rna_class + TNM_stage.bin + tp53, 
                          data =  dong.unresectable )
+
+cox.os.cms.dong.tp53
 
 dong.os.cms.tp53 <- survfit(Surv(OS_overall_survival_day/30, OSevent) ~ rna_class + tp53, 
                               data = dong.unresectable )
@@ -142,31 +174,36 @@ p <- ggsurvplot(
   conf.int = F,
   risk.table = T,
   pval = FALSE,
-  censor = F,
+  censor = F,xlab="Months after surgery",  
   color      = "rna_class", 
   linetype = "tp53"  
 )
 
+p
+
 p$plot <- p$plot +
   scale_color_manual(values = c(
-    "CMS-A" = "#04597C",
-    "CMS-B" = "#EDA71A"
+    "CCS-A" = "#04597C",
+    "CCS-B" = "#EDA71A"
   )) +
-  scale_linetype_manual(values = c("wt" = "dashed", "TP53+" = "solid"))
+  scale_linetype_manual(values = c("wt" = "21", "TP53+" = "solid"))
 
 p.plot <- p$plot
 p.plot.g <- 
   p.plot + 
   theme_bw(base_size=10) + 
-  guides(color='none',fill='none', linetype='none') +
+  guides(fill='none') +
   theme(panel.grid = element_blank(),
+        legend.location = 'bottom',
         plot.background = element_blank(),
         panel.background = element_blank()) +
   scale_x_continuous(breaks = seq(0, max(dong.unresectable$OS_overall_survival_day/30), by = 12))
 
 p.plot.g
-ggsave(paste0(basedir, "/results/fig/FIGS4F.cms.os.dong.tp53.svg"),plot =p.plot.g
-       , device = "svg",width = 67, height = 75, units = 'mm' )
+
+ggsave(paste0(data.dir, "/results/fig/FIGS4d.cms.os.dong.tp53.svg"),
+       plot =p.plot.g
+       , device = "svg",width = 95, height = 60, units = 'mm' )
 
 ```
 
@@ -177,13 +214,13 @@ Illumina HumanHT-12 V4.0 expression beadchip data from [geo](https://www.ncbi.nl
 
 ```{r}
 
-jusakul_sample <- fread(file.path(secdir,'/source_data/cbioportal/chol_icgc_2017/data_clinical_sample.txt'), skip=4)
-jusakul_patient <- fread(file.path(secdir,'/source_data/cbioportal/chol_icgc_2017/data_clinical_patient.txt'), skip=4)
+jusakul_sample <- fread(file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/data_clinical_sample.txt'), skip=4)
+jusakul_patient <- fread(file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/data_clinical_patient.txt'), skip=4)
 
 jusakul_patient <- full_join(jusakul_patient, jusakul_sample, by=c('PATIENT_ID'='PATIENT_ID'))
 
-jusakul_expression_1 <- fread(file.path(secdir,'/source_data/cbioportal/chol_icgc_2017/GSE89747_CCA_batch01_illumina_Gene_expression_noNorm_noBKGD.txt'))
-jusakul_expression_2 <- fread(file.path(secdir,'/source_data/cbioportal/chol_icgc_2017/GSE89748_CCA_batch02_illumina_Gene_expression_noNorm_noBKGD.txt'))
+jusakul_expression_1 <- fread(file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/GSE89747_CCA_batch01_illumina_Gene_expression_noNorm_noBKGD.txt'))
+jusakul_expression_2 <- fread(file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/GSE89748_CCA_batch02_illumina_Gene_expression_noNorm_noBKGD.txt'))
   
 clean_illumina_array <- function(rna.raw){
   expr_cols <- seq(2, ncol(rna.raw), by = 2)
@@ -244,12 +281,13 @@ rownames(jusakul.collapsed.mat) <- jusakul.collapsed_df$gene_symbols
 
 jusakul.predicted.w.score <- 
   predict_TSP_with_confidence(tpm_matrix=jusakul.collapsed.mat, 
-                              tsp_classifier=classifier, confidence_cutoff = 0.75 )
+                              tsp_classifier=classifier, confidence_cutoff = 10/16 )
 
+table(jusakul.predicted.w.score$rna_class)
 
 write.table(
   jusakul.predicted.w.score,
-  file = file.path(basedir, "/results/jusakul.eCMS.txt"),
+  file = file.path(data.dir, "/results/jusakul.eCCS.txt"),
   row.names = T, quote = FALSE, sep = "\t"
 )
 
@@ -272,11 +310,11 @@ ggplot(jusakul.sample.scored,aes(x=Dim.1, y=Dim.3)) +
   theme(panel.grid = element_blank())
 
 
-jusakul_cms <- fread(file.path(basedir,'results/jusakul.eCMS.txt'))
+jusakul_cms <- fread(file.path(data.dir,'results/jusakul.eCCS.txt'))
 jusakul_patient <- full_join(jusakul_patient, jusakul_cms, by=c('PATIENT_ID'='V1'))
 
 
-jusakul_muts <- fread(file.path(secdir,'/source_data/cbioportal/chol_icgc_2017/data_mutations.txt'))
+jusakul_muts <- fread(file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/data_mutations.txt'))
 
 
 jusakul_drivers <- jusakul_muts %>% filter(Hugo_Symbol %in% c('BAP1','TP53','FGFR2','IDH1','SMAD4')) %>%
@@ -284,8 +322,8 @@ jusakul_drivers <- jusakul_muts %>% filter(Hugo_Symbol %in% c('BAP1','TP53','FGF
 
 jusakul_dcast <- dcast(jusakul_drivers,Tumor_Sample_Barcode~ Hugo_Symbol, value.var = 'Consequence', fun.aggregate = length)
 jusakul_dcast$gCMS <- NA
-jusakul_dcast$gCMS[(jusakul_dcast$BAP1 == 1 | jusakul_dcast$IDH1  == 1) & (jusakul_dcast$SMAD4 == 0 & jusakul_dcast$TP53 == 0 )] <- 'gCMS-A'
-jusakul_dcast$gCMS[(jusakul_dcast$SMAD4 == 1 | jusakul_dcast$TP53  == 1) & (jusakul_dcast$BAP1 == 0 & jusakul_dcast$IDH1 == 0 )] <- 'gCMS-B'
+jusakul_dcast$gCMS[(jusakul_dcast$BAP1 == 1 | jusakul_dcast$IDH1  == 1) & (jusakul_dcast$SMAD4 == 0 & jusakul_dcast$TP53 == 0 )] <- 'gCCS-A'
+jusakul_dcast$gCMS[(jusakul_dcast$SMAD4 == 1 | jusakul_dcast$TP53  == 1) & (jusakul_dcast$BAP1 == 0 & jusakul_dcast$IDH1 == 0 )] <- 'gCCS-B'
 
 
 jusakul.sample.scored <- jusakul_patient
@@ -300,15 +338,24 @@ jusakul.sample.scored$OS_STATUS <- as.numeric(jusakul.sample.scored$OS_STATUS)
 
 jusakul.sample.scored$STAGE.BIN <- jusakul.sample.scored$STAGE
 jusakul.sample.scored$STAGE.BIN[jusakul.sample.scored$STAGE %in% c('0','TBA') ] <- NA
-jusakul.sample.scored$STAGE.BIN[jusakul.sample.scored$STAGE %in% c('I','IA') ] <- 'I'
-jusakul.sample.scored$STAGE.BIN[jusakul.sample.scored$STAGE %in% c('II','IIA','IIB') ] <- 'II'
+jusakul.sample.scored$STAGE.BIN[jusakul.sample.scored$STAGE %in% c('I','IA','IB', 'II','IIA','IIB') ] <- 'I&II'
 jusakul.sample.scored$STAGE.BIN[jusakul.sample.scored$STAGE %in% c('III','IIIA','IIIB') ] <- 'III'
 jusakul.sample.scored$STAGE.BIN[jusakul.sample.scored$STAGE %in% c('IV','IVA','IVB','4') ] <- 'IV'
+jusakul.sample.scored$ANATOMICAL_SUBTYPE[jusakul.sample.scored$ANATOMICAL_SUBTYPE %in% c('Extrahepatic') ] <- NA
 
 jusakul.sample.scored <- jusakul.sample.scored %>% filter(ANATOMICAL_SUBTYPE != 'N/A')
 
+jusakul.sample.scored$OS_STATUS[jusakul.sample.scored$OS_MONTHS > 12 * 5] <- 0
+jusakul.sample.scored$OS_MONTHS[jusakul.sample.scored$OS_MONTHS > 12 * 5] <- 12 * 5
+
 jusakul.os.cms <- survfit(Surv(OS_MONTHS, OS_STATUS) ~ rna_class , 
                           data = jusakul.sample.scored )
+
+sum(jusakul.os.cms$n)
+surv_pvalue(jusakul.os.cms, data = jusakul.sample.scored)
+
+jusakul.med.surv <- surv_median(jusakul.os.cms)
+jusakul.med.surv
 
 
 jusakul.os.cms.ggsurv <- 
@@ -316,9 +363,8 @@ jusakul.os.cms.ggsurv <-
              pval = F, conf.int = T,
              xlab="Months after diagnosis",
              legend="none", 
-             xlim = c(0,100),
              risk.table = F,  # Adds number at risk table
-             #  surv.median.line = "hv", 
+             surv.median.line = "hv", 
              palette =  c("#04597C","#EDA71A")
   )
 
@@ -332,12 +378,30 @@ os.cms.jusakul.plot.g <-
         panel.background = element_blank()) +
   scale_x_continuous(breaks = seq(0, max(jusakul.sample.scored$OS_MONTHS, na.rm = T), by = 12))
 
+os.cms.jusakul.plot.g <- os.cms.jusakul.plot.g +
+  annotate("text",
+           x = jusakul.med.surv$median, y = 0.05,
+           label = paste0(gsub("rna_class=", "", jusakul.med.surv$strata), 
+                          ":\n", round(jusakul.med.surv$median, 1), " mo"),
+           hjust = 1.2, vjust = 0.25, size = 3,
+           color = c("#04597C", "#EDA71A"))
+
 os.cms.jusakul.plot.g
 
-ggsave(paste0(basedir, "/results/fig/FIGS2G.cms.os.jusakul.svg"),plot =os.cms.jusakul.plot.g
-       , device = "svg",width = 67, height = 65, units = 'mm' )
+ggsave(file.path(data.dir, "/results/fig/FIG2D.ccs.os.jusakul.svg"),
+       plot =os.cms.jusakul.plot.g
+      , device = "svg",width = 67, height = 50, units = 'mm' )
+
 
 cox.os.cms.jusakul <- coxph(Surv(OS_MONTHS, OS_STATUS) ~ rna_class + STAGE.BIN, 
+                            data =  jusakul.sample.scored  )
+
+ggforest(cox.os.cms.jusakul, data =jusakul.sample.scored)
+
+
+jusakul.sample.scored %>% group_by(rna_class, ANATOMICAL_SUBTYPE) %>% tally()
+
+cox.os.cms.jusakul <- coxph(Surv(OS_MONTHS, OS_STATUS) ~ rna_class + ANATOMICAL_SUBTYPE, 
                             data =  jusakul.sample.scored  )
 
 ggforest(cox.os.cms.jusakul, data =jusakul.sample.scored)
@@ -356,20 +420,20 @@ Combined datasets from [Jolissaint et al. 2020](https://pubmed.ncbi.nlm.nih.gov/
 ```{r}
 
 
-hcc_2024_patients = fread(file.path(secdir, '/source_data/cbioportal/hcc_msk_2024', 'data_clinical_patient.txt'), skip = "PATIENT_ID")
+hcc_2024_patients = fread(file.path(data.dir, '/source_data/cbioportal/hcc_msk_2024', 'data_clinical_patient.txt'), skip = "PATIENT_ID")
 names(hcc_2024_patients) <- paste0(names(hcc_2024_patients),'_hcc24')
 
 
-icca_2021_patients = fread(file.path(secdir, '/source_data/cbioportal/ihch_msk_2021', 'data_clinical_patient.txt'), skip = "PATIENT_ID")
+icca_2021_patients = fread(file.path(data.dir, '/source_data/cbioportal/ihch_msk_2021', 'data_clinical_patient.txt'), skip = "PATIENT_ID")
 names(icca_2021_patients) <- paste0(names(icca_2021_patients),'_icc21')
 
-icca_cc2020_patients = fread(file.path(secdir, '/source_data/cbioportal/ihch_mskcc_2020', 'data_clinical_patient.txt'), skip = "PATIENT_ID")
+icca_cc2020_patients = fread(file.path(data.dir, '/source_data/cbioportal/ihch_mskcc_2020', 'data_clinical_patient.txt'), skip = "PATIENT_ID")
 names(icca_cc2020_patients) <- paste0(names(icca_cc2020_patients),'_cc20')
 
 these_patients <- full_join(hcc_2024_patients, icca_2021_patients, by=c('PATIENT_ID_hcc24'='PATIENT_ID_icc21'))  %>%
   full_join(icca_cc2020_patients, by=c('PATIENT_ID_hcc24'='PATIENT_ID_cc20')) 
 
-these_samples = fread(file.path(secdir, '/source_data/cbioportal/hcc_msk_2024', 'data_clinical_sample.txt'), skip = "SAMPLE_ID")
+these_samples = fread(file.path(data.dir, '/source_data/cbioportal/hcc_msk_2024', 'data_clinical_sample.txt'), skip = "SAMPLE_ID")
 names(these_samples) <- paste0(names(these_samples),'_hcc24')
 
 these_patients <- left_join(these_patients, these_samples, by=c('PATIENT_ID_hcc24'='PATIENT_ID_hcc24'))
@@ -399,13 +463,13 @@ ggplot(primary_location_tally, aes(x=reorder(ONCOTREE_CODE_hcc24, -n), y=n)) +
 
 these_patients %>% group_by(DUCT_TYPE_cc20, ONCOTREE_CODE_hcc24) %>% tally()
 
-write.table( these_patients,  file = file.path(basedir,"/results/msk.patients.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+write.table( these_patients,  file = file.path(data.dir,"/results/msk.patients.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
 
 
 make.hg19.bed = T
 if(make.hg19.bed){
   library(rtracklayer)
-  hg19.refGene.gtf <- fread(file.path(secdir, '/source_data/hg19.refGene.gtf')) %>% filter(V3 == 'transcript')
+  hg19.refGene.gtf <- fread(file.path(data.dir, '/source_data/hg19.refGene.gtf')) %>% filter(V3 == 'transcript')
   names(hg19.refGene.gtf) <- c('seqname','source','feature','start','end','score','strand','frame','attribute')
   
   gr <- as(hg19.refGene.gtf, "GRanges")
@@ -429,17 +493,20 @@ if(make.hg19.bed){
     slice_max(order_by = length, n = 1, with_ties = FALSE) %>%
     ungroup()
   
-  
+  write.table( hg19.bed,  
+           file = file.path(code.dir,"/data/genebed.hg19.txt"), 
+           row.names = FALSE, col.names = F, quote = FALSE, sep = "\t")
+
 }
 
-msk.mut <- fread(file.path(secdir, '/source_data/cbioportal/hcc_msk_2024/data_mutations.txt'),skip=2)
+msk.mut <- fread(file.path(data.dir, '/source_data/cbioportal/hcc_msk_2024/data_mutations.txt'),skip=2)
 msk.mut$mean.vaf <- msk.mut$t_alt_count / (msk.mut$t_ref_count + msk.mut$t_alt_count)
 
 msk.med.vaf <- msk.mut %>%
   group_by(Tumor_Sample_Barcode ) %>% 
   summarise(across(mean.vaf, \(x) mean(x, na.rm = TRUE)))
 
-msk21.mut <- fread(file.path(secdir, '/source_data/cbioportal/ihch_msk_2021/data_mutations.txt'))
+msk21.mut <- fread(file.path(data.dir, '/source_data/cbioportal/ihch_msk_2021/data_mutations.txt'))
 msk21.mut$mean.vaf <- msk21.mut$t_alt_count / (msk21.mut$t_ref_count + msk21.mut$t_alt_count)
 msk21.mut <-  msk21.mut %>% filter(Tumor_Sample_Barcode %ni% msk.med.vaf$Tumor_Sample_Barcode)
 
@@ -458,11 +525,11 @@ msk21.driver <- msk21.mut %>% filter(Hugo_Symbol %in% c('BAP1','FGFR2','IDH1','T
 msk.driver <- rbind.data.frame(msk.driver, msk21.driver) %>% dcast(Tumor_Sample_Barcode ~ Hugo_Symbol, value.var = 'Hugo_Symbol', fun.aggregate = length)
 
 
-msk.cn <- fread(file.path(secdir, '/source_data/cbioportal/hcc_msk_2024/data_cna_hg19.seg'))
+msk.cn <- fread(file.path(data.dir, '/source_data/cbioportal/hcc_msk_2024/data_cna_hg19.seg'))
 msk.cn$chrom <- paste0('chr',msk.cn$chrom)
 msk.cn <- msk.cn %>% filter(!is.na(seg.mean))
 
-msk21.cn <- fread(file.path(secdir, '/source_data/cbioportal/ihch_msk_2021/data_cna_hg19.seg'))
+msk21.cn <- fread(file.path(data.dir, '/source_data/cbioportal/ihch_msk_2021/data_cna_hg19.seg'))
 msk21.cn$chrom <- paste0('chr',msk21.cn$chrom)
 msk21.cn <- msk21.cn %>% filter(!is.na(seg.mean) & ID %ni% msk.cn$ID)
 length(unique(msk21.cn$ID))
@@ -473,7 +540,7 @@ msk.segmented.data <- CNSeg(msk.cn)
 msk.segment.gene <- getRS(msk.segmented.data, by="gene", imput=FALSE, XY=FALSE, geneMap=as.data.frame(hg19.bed), what="min")
 msk.segment.gene <- rs(msk.segment.gene)
 
-cytoBand <- fread(file.path(basedir,'/source_data/cytoBand.txt'), na.strings = '') %>% filter(!is.na(Chromosome))
+cytoBand <- fread(file.path(data.dir,'/source_data/cytoBand.txt'), na.strings = '') %>% filter(!is.na(Chromosome))
 
 cytoBand<- separate(cytoBand, col = Chromosome, into = c('band','period'), sep = '\\.', remove=F, extra = 'drop', fill = 'right')
 
@@ -503,17 +570,22 @@ names(msk.transposed.raw)[-1] <- paste0('arm.',names(msk.transposed.raw)[-1])
 
 msk.transposed.raw <- inner_join(msk.med.vaf, msk.transposed.raw, by=c('Tumor_Sample_Barcode'='sample'))
 
-#### PREDICT gCMS ####
+```
 
-full_model <- readRDS(file.path(basedir,'/results/cnv.model.rds'))
-THRESHOLD = 0.34
+## PREDICT gCCS in MSK
+
+```{r}
+
+full_model <- readRDS(file.path(data.dir,'/results/cnv.model.rds'))
+THRESHOLD = 0.5
 
 msk.transposed.raw$prob <- predict(full_model, msk.transposed.raw , type = "response")
 
 msk.driver.cnv <- 
   full_join(msk.driver, msk.transposed.raw, by=c('Tumor_Sample_Barcode'='Tumor_Sample_Barcode')) 
 
-msk.driver.cnv$sample <- factor(msk.driver.cnv$Tumor_Sample_Barcode, levels=msk.driver.cnv$Tumor_Sample_Barcode[order(msk.driver.cnv$prob)])
+msk.driver.cnv$sample <- factor(msk.driver.cnv$Tumor_Sample_Barcode, 
+                                levels=msk.driver.cnv$Tumor_Sample_Barcode[order(msk.driver.cnv$prob)])
 
 msk.BAP1_tumours <- msk.driver.cnv %>% filter(BAP1 >0 & TP53 == 0) %>% dplyr::select(Tumor_Sample_Barcode) %>% unlist()
 msk.tp53_tumours <- msk.driver.cnv %>% filter(TP53 > 0 & BAP1 == 0) %>% dplyr::select(Tumor_Sample_Barcode) %>% unlist()
@@ -533,7 +605,7 @@ auc(roc_obj)
 
 coords(roc_obj, THRESHOLD, ret = c("threshold", "sensitivity", "specificity"))
 
-ggplot(msk.subset , aes(x=reorder(Tumor_Sample_Barcode, prob), y=prob)) + 
+ggplot(msk.subset %>% filter(!is.na(driver.class)), aes(x=reorder(Tumor_Sample_Barcode, prob), y=prob)) + 
  
  geom_hline(yintercept = THRESHOLD, color='grey90')+
  
@@ -551,24 +623,24 @@ ggplot(msk.subset , aes(x=reorder(Tumor_Sample_Barcode, prob), y=prob)) +
        axis.text.x = element_blank()
  ) + 
  ylim(0,1)+
- labs(x='', y='CNV-Based Probability of CMS-B',color='')
+ labs(x='', y='CNV-Based Probability of CCS-B',color='')
 
        
 msk.subset <- msk.driver.cnv %>% dplyr::filter( (CANCER_TYPE_DETAILED_hcc24 != 'Hepatocellular Carcinoma' | is.na(CANCER_TYPE_DETAILED_hcc24)) & 
                                                   (mean.vaf > 0.15 | is.na(mean.vaf)) )
 
-msk.subset$glm_labels <- ifelse(msk.subset$prob < THRESHOLD, 'gCMS-B', 'gCMS-A')
+msk.subset$glm_labels <- ifelse(msk.subset$prob < THRESHOLD, 'gCCS-B', 'gCCS-A')
 table(msk.subset[,c('glm_labels','driver.class')])
 
 
 write.table(
   msk.subset,
-  file = paste0(basedir, "/results/msk.gCMS.txt"),
+  file = paste0(data.dir, "/results/msk.gCCS.txt"),
   row.names = T, quote = FALSE, sep = "\t"
 )
 
+msk.btc <- fread(paste0(data.dir, "/results/msk.gCCS.txt"))
 
-msk.btc <- fread(paste0(basedir, "/results/msk.gCMS.txt"))
 msk.btc$OS_STATUS_hcc24[msk.btc$OS_STATUS_hcc24 == "0:LIVING"] <- 0
 msk.btc$OS_STATUS_hcc24[msk.btc$OS_STATUS_hcc24 == "1:DECEASED"] <- 1
 msk.btc$OS_STATUS_hcc24 <- as.numeric(msk.btc$OS_STATUS_hcc24)
@@ -581,41 +653,70 @@ msk.btc.surv <- msk.btc %>% filter(!is.na(OS_STATUS_hcc24) & !is.na(OS_MONTHS_hc
 msk.btc.surv$glm_labels <- as.factor(msk.btc.surv$glm_labels)
 nrow(msk.btc.surv)
 
-os <- survfit(Surv(OS_MONTHS_hcc24, OS_STATUS_hcc24) ~ glm_labels  , 
+msk.btc.surv$OS_STATUS_hcc24[msk.btc.surv$OS_MONTHS_hcc24 > 5 * 12] <- 0
+msk.btc.surv$OS_MONTHS_hcc24[msk.btc.surv$OS_MONTHS_hcc24 >= 5 * 12] <- 5 * 12
+
+msk.btc.os <- survfit(Surv(OS_MONTHS_hcc24, OS_STATUS_hcc24) ~ glm_labels  , 
               data = msk.btc.surv )
 
-cox.os.cms.msk <- coxph(Surv(OS_MONTHS_hcc24, OS_STATUS_hcc24) ~ glm_labels  , 
-                        data =  msk.btc )
+sum(msk.btc.os$n)
+surv_pvalue(msk.btc.os, data = msk.btc.surv)
 
-ggforest(cox.os.cms.msk, data =msk.btc)
-
+jusakul.med.surv <- surv_median(msk.btc.os)
+jusakul.med.surv
 
 msk.surv.plt <- 
-  ggsurvplot(os, data = msk.btc, 
+  ggsurvplot(msk.btc.os, data = msk.btc.surv, 
              pval = F, 
              conf.int = T, 
              censor = TRUE,
              risk.table = F,  
              legend="none", 
              xlab="Months after diagnosis",
-             palette =  c("#04597C","#EDA71A")
+             palette =  c("#04597C","#EDA71A"),
+             surv.median.line = "hv" 
   ) 
 
 msk.surv.plt.g <- msk.surv.plt$plot
+
 msk.surv.plt.g <- 
   msk.surv.plt.g + 
   theme_bw(base_size=10) + guides(color='none',fill='none') +
   theme(panel.grid = element_blank(),
         plot.background = element_blank(),
-        panel.background = element_blank()) +
-  scale_x_continuous(breaks = seq(0, max(msk.btc$OS_MONTHS_icc21, na.rm = T), by = 24), limits = c(0, 180)) 
+        panel.background = element_blank())+
+  scale_x_continuous(breaks = seq(0, max(msk.btc.surv$OS_MONTHS_hcc24, na.rm = T), by = 12))
+
+msk.surv.plt.g <- msk.surv.plt.g +
+  annotate("text",
+           x = jusakul.med.surv$median, y = 0.05,
+           label = paste0(gsub("glm_labels=", "", jusakul.med.surv$strata), 
+                          ":\n", round(jusakul.med.surv$median, 1), " mo"),
+           hjust = 1.2, vjust = 0.25, size = 3,
+           color = c("#04597C", "#EDA71A"))
 
 msk.surv.plt.g
-ggsave(paste0(basedir, "/results/fig/FIGS2H.msk.gCMS.OS.svg"), plot = msk.surv.plt.g
-       , device = "svg",width = 67, height = 65, units = 'mm', dpi=72 )
 
+ggsave(paste0(data.dir, "/results/fig/FIG2E.msk.gCMS.OS.svg"), 
+       plot = msk.surv.plt.g
+      , device = "svg",width = 67, height = 50, units = 'mm' )
 
-msk.btc.complete <- msk.btc %>% filter(TUMOR_STAGE_hcc24 != '')
+```
+
+## Full Model MSK
+
+```{r}
+
+cox.os.cms.msk <- coxph(Surv(OS_MONTHS_hcc24, OS_STATUS_hcc24) ~ glm_labels  , 
+                        data =  msk.btc )
+
+ggforest(cox.os.cms.msk, data =msk.btc)
+
+msk.btc.complete <- msk.btc %>% filter(TUMOR_STAGE_hcc24 != '' & ONCOTREE_CODE_hcc24 != 'HCCIHCH')
+
+msk.btc.complete$glm_labels <- factor(msk.btc.complete$glm_labels, levels = rev(c('gCCS-B','gCCS-A')))
+msk.btc.complete$ONCOTREE_CODE_hcc24 <- factor(msk.btc.complete$ONCOTREE_CODE_hcc24, levels = rev(c('GBC','EHCH','HCCIHCH','IHCH')))
+msk.btc.complete$TUMOR_STAGE_hcc24 <- factor(msk.btc.complete$TUMOR_STAGE_hcc24, levels = c('Well differentiated','Moderately differentiated','Poorly differentiated'))
 
 cox.os.cms.msk <- coxph(Surv(OS_MONTHS_hcc24, OS_STATUS_hcc24) ~ glm_labels + ONCOTREE_CODE_hcc24 + TUMOR_STAGE_hcc24 , 
                         data =  msk.btc.complete )
@@ -659,33 +760,53 @@ full.forest.df$p[is.na(full.forest.df$p)] <- '(reference)'
 full.forest.df$variable <- as.character(full.forest.df$variable)
 full.forest.df$variable[full.forest.df$variable == 'ONCOTREE_CODE_hcc24'] <- 'Location'
 full.forest.df$variable[full.forest.df$variable == 'TUMOR_STAGE_hcc24'] <- 'Stage'
-full.forest.df$variable[full.forest.df$variable == 'glm_labels'] <- 'gCMS'
-full.forest.df$category <- factor(full.forest.df$variable, levels = c('gCMS','Location','Stage'))
+full.forest.df$variable[full.forest.df$variable == 'glm_labels'] <- 'gCCS'
+full.forest.df$category <- factor(full.forest.df$variable, levels = c('gCCS','Location','Stage'))
 
 full.forest.df$value[full.forest.df$value == 'EHCH'] <- 'pCCA/dCCA'
 full.forest.df$value[full.forest.df$value == 'HCCIHCH'] <- 'HCC-CCA'
 full.forest.df$value[full.forest.df$value == 'IHCH'] <- 'iCCA'
 
 full.forest.df$value.n <- paste0(full.forest.df$value,'\nn=',full.forest.df$n)
-full.forest.df$type <- factor(full.forest.df$value.n, levels = c('GBC\nn=120','pCCA/dCCA\nn=83','iCCA\nn=361','HCC-CCA\nn=32',
-                                                                 'Well differentiated\nn=23','Moderately differentiated\nn=323','Poorly differentiated\nn=250',
-                                                                 'gCMS-B\nn=319','gCMS-A\nn=215'))
+
+full.forest.df$value <- factor(full.forest.df$value, levels = c(rev(c('Well differentiated','Moderately differentiated','Poorly differentiated')),
+                                                                'GBC','pCCA/dCCA','HCC-CCA','iCCA',
+                                                                'gCCS-B','gCCS-A'))
+                                
+
+full.forest.df$type <- factor(full.forest.df$value.n, levels = full.forest.df$value.n[order(full.forest.df$value)])
+
+
+facet.bg <- data.frame(
+  category = unique(full.forest.df$category),
+  fill = rep(c("grey95", "white"),
+             length.out = length(unique(full.forest.df$category)))
+)
 
 
 msk.gCMS.HZ.plot <- 
-ggplot(full.forest.df, aes(x=-log(HZ), y=type)) +
+       ggplot(full.forest.df, aes(x=log(HZ, 2), y=type)) +
+            geom_rect(
+            data = facet.bg,
+            inherit.aes = FALSE,
+            aes(fill = fill),
+            xmin = min(log(full.forest.df$ci.low, 2), na.rm = T), xmax = Inf,
+            ymin = -Inf, ymax = Inf
+          ) +
+        
+          scale_fill_identity() +
          facet_grid(category~., scales='free',space='free',switch='y')+
          geom_vline(xintercept = 0, color='grey80')+
-         geom_errorbar( aes(xmin =  -log(ci.low), xmax = -log(ci.hi)), width=0) +
-         geom_point(shape=16, aes(color=type))+ 
-         geom_text(aes(label=p), x=min(-log(full.forest.df$ci.hi), na.rm = T), hjust=1.5, size=2.5) +
-         #coord_fixed()+
+         geom_errorbar( aes(xmin =  log(ci.low, 2), xmax = log(ci.hi, 2)), width=0) +
+         geom_point(shape=16, size=3, aes(color=value))+ 
+  
+         geom_text(aes(label=p), x=min(log(full.forest.df$ci.low, 2), na.rm = T), hjust=1.5, size=2.5) +
+
          theme_bw(base_size=10) +
-         # scale_color_manual(values = pnw_palette(name="Bay", n=30)[c(3,20)], na.value = 'grey90') +
-         
+
          theme(panel.grid = element_blank(), 
                panel.border = element_blank(),
-               panel.spacing = unit(0.2, "lines"),
+               panel.spacing = unit(1, "lines"),
                strip.background = element_blank(),
                plot.margin = unit(c(0, 0, 0, 0), "mm"),
                legend.position = 'bottom',
@@ -703,24 +824,25 @@ ggplot(full.forest.df, aes(x=-log(HZ), y=type)) +
                )
                
          ) +scale_color_manual(  values=c(
-           "gCMS-B\nn=319"    = "#EDA71A" , 
-           "gCMS-A\nn=215" = "#04597C" 
+           "gCCS-B"    = "#EDA71A" , 
+           "gCCS-A" = "#04597C" ,
+           'HCC-CCA' = "grey",
+           'pCCA/dCCA' = "#e59d54ff",
+           'iCCA' = "#fbcc7aff",
+           'GBC' = "#855b40ff"
+           
          ), na.value = 'black') +
          guides(color='none', size='none')+
-         labs(x='Hazard Ratio',y='')+
+         labs(x='Hazard Ratio (log2)',y='')+
          scale_y_discrete(position = "left")+ 
          coord_cartesian(clip = "off") 
+       
 
 msk.gCMS.HZ.plot
 
-ggsave(paste0(basedir, "/results/fig/FIG2G.msk.gCMS.HZ.svg"), plot = 
-         
+ggsave(paste0(data.dir, "/results/fig/FIGS2h.msk.gCMS.HZ.svg"), plot = 
      msk.gCMS.HZ.plot
-       
-       ,
-       
-       device = "svg", width = 100, height = 75, 
-       units = 'mm', dpi=72 )
+, device = "svg", width = 110, height = 60,  units = 'mm', dpi=72 )      
 
 
 ```
@@ -777,8 +899,8 @@ msk.loc.lods <- rbind.data.frame(
 )
 
 msk.loc.lods$sig <- NA
-msk.loc.lods$sig[msk.loc.lods$pvalue < 0.05 & msk.loc.lods$odds < 1] <- 'CMS-A'
-msk.loc.lods$sig[msk.loc.lods$pvalue < 0.05 & msk.loc.lods$odds > 1] <- 'CMS-B'
+msk.loc.lods$sig[msk.loc.lods$pvalue < 0.05 & msk.loc.lods$odds < 1] <- 'CCS-A'
+msk.loc.lods$sig[msk.loc.lods$pvalue < 0.05 & msk.loc.lods$odds > 1] <- 'CCS-B'
 
 
 msk.loc.lods$type.n <- paste0(msk.loc.lods$type,'\nn=',msk.loc.lods$n)
@@ -816,9 +938,8 @@ cms.location.msk.plot <-
 
 cms.location.msk.plot     
   
-ggsave(file.path(basedir, "/results/fig/FIG2E.cms.location.msk.svg"),plot =
-         cms.location.msk.plot
-       , device = "svg", width = 55, height = 30, units = 'mm' )
+
+msk.loc.lods
 
 ```
 

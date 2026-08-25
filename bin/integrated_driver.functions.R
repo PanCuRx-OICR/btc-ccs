@@ -1,3 +1,4 @@
+#! /usr/bin/env Rscript
 
 #BiocManager::install("CNTools")
 
@@ -73,16 +74,17 @@ adjust_for_ploidy <- function(this.cn.tpm, ploidies){
 }
 
 get.sv.window <- function(this.gene, gene_set, WINDOW_SIZE, unclustered.sv){
-  this.gene.chr <- gene_set$Chr[gene_set$gene_name == this.gene]
-  window.start <- gene_set$Start[gene_set$gene_name == this.gene] - WINDOW_SIZE
-  window.end <- gene_set$End[gene_set$gene_name == this.gene] + WINDOW_SIZE
+  this.gene.chr <- unique(gene_set$Chr[gene_set$gene_name == this.gene])
+  window.start <- min(gene_set$Start[gene_set$gene_name == this.gene]) - WINDOW_SIZE
+  window.end <- max(gene_set$End[gene_set$gene_name == this.gene]) + WINDOW_SIZE
   
-  rearranged.tumours <- unclustered.sv[unclustered.sv$CHROM == this.gene.chr & window.start < unclustered.sv$POS & unclustered.sv$POS < window.end, ]
-  
-  rearranged.tumours$GENE[is.na(rearranged.tumours$GENE)] <- this.gene
-  rearranged.tumours$SV[is.na(rearranged.tumours$SV)]  <- 'BND'
-  
-  return(rearranged.tumours)
+    rearranged.tumours <- unclustered.sv[unclustered.sv$CHROM == this.gene.chr & window.start < unclustered.sv$POS & unclustered.sv$POS < window.end, ]
+    
+    rearranged.tumours$GENE[is.na(rearranged.tumours$GENE)] <- this.gene
+    rearranged.tumours$SV[is.na(rearranged.tumours$SV)]  <- 'BND'
+    
+    return(rearranged.tumours)
+
 }
 
 make_cn_tpm_plots <- function(this.gene, this.cn.tpm, root_path){
@@ -360,6 +362,111 @@ split_and_sum <- function(this.value) {
   sum(as.numeric(parts))
 }
 
+get.gistic.by.gene <- function(scores.gistic, genebed){
+  
+  scores.gistic <- scores.gistic %>% filter(Chromosome %ni% c(23:25))
+  
+  scores.gistic$Chromosome <- paste0('chr', scores.gistic$Chromosome)
+  scores.gistic$toy.marker <- 1
+  
+  gscores.gistic <- scores.gistic %>% dplyr::select(Type, Chromosome,Start,End,toy.marker, `G-score`)
+  names(gscores.gistic) <- c('ID','chrom','loc.start','loc.end','num.mark','seg.mean')
+  
+  cn.gistic.g <- CNSeg(gscores.gistic)
+  cn.gistic.g.gene <- getRS(cn.gistic.g, by="gene", imput=FALSE, XY=FALSE, geneMap=genebed, what="min")
+  cn.gistic.g.gene <- rs(cn.gistic.g.gene)
+  
+  cn.gistic.g.gene.melt <- cn.gistic.g.gene %>% reshape2::melt(id.vars=c('chrom','start','end','geneid','genename'))
+  names(cn.gistic.g.gene.melt)[7] <- 'gvalue'
+  
+  cn.gistic.g.gene.melt$gflip <- cn.gistic.g.gene.melt$gvalue
+  cn.gistic.g.gene.melt$gflip[cn.gistic.g.gene.melt$variable == 'Del'] <- -cn.gistic.g.gene.melt$gflip[cn.gistic.g.gene.melt$variable == 'Del']
+  
+  ## p 
+  
+  pvalue.gistic <- scores.gistic %>% dplyr::select(Type, Chromosome,Start,End,toy.marker, `-log10(q-value)`)
+  
+  names(pvalue.gistic) <- c('ID','chrom','loc.start','loc.end','num.mark','seg.mean')
+  
+  cn.gistic.p <- CNSeg(pvalue.gistic)
+  cn.gistic.p.gene <- getRS(cn.gistic.p, by="gene", imput=FALSE, XY=FALSE, geneMap=genebed, what="min")
+  cn.gistic.p.gene <- rs(cn.gistic.p.gene)
+  
+  cn.gistic.p.gene.melt <- cn.gistic.p.gene %>% reshape2::melt(id.vars=c('chrom','start','end','geneid','genename'))
+  names(cn.gistic.p.gene.melt)[7] <- 'pvalue'
+  
+  cn.gistic.p.gene.melt$pflip <- cn.gistic.p.gene.melt$pvalue
+  cn.gistic.p.gene.melt$pflip[cn.gistic.p.gene.melt$variable == 'Del'] <- -cn.gistic.p.gene.melt$pflip[cn.gistic.p.gene.melt$variable == 'Del']
+  
+  cn.gistic.gene.melt <- full_join(cn.gistic.g.gene.melt, cn.gistic.p.gene.melt, by=c('chrom'='chrom','start'='start','end'='end','geneid'='geneid','genename'='genename','variable'='variable'))
+  cn.gistic.gene.melt$type.f <- factor(cn.gistic.gene.melt$variable, levels=c('Amp','Del'))
+  cn.gistic.gene.melt$Chrom <- as.numeric(gsub('chr','',cn.gistic.gene.melt$chrom))
+  
+  return(cn.gistic.gene.melt)
+}
+
+
+this_theme <- theme(        
+  panel.background = element_rect(fill='transparent'), #transparent panel bg
+  plot.background = element_rect(fill='transparent', color='transparent'), #transparent plot bg
+  panel.grid.major.x = element_blank(), #remove major gridlines
+  panel.grid.minor = element_blank(), #remove minor gridlines
+  legend.background = element_rect(color = NA,fill=NA), #transparent legend bg
+  legend.box.background = element_rect(color = NA,fill=NA), #transparent legend panel
+  
+  plot.title = element_blank(),
+  legend.spacing = unit(0, 'cm'),)+   
+  theme(
+    plot.margin = unit(c(0, 0, 0, 0), "mm"),
+    
+    panel.grid = element_blank(),
+    plot.background = element_blank(),
+    panel.background = element_blank(),
+    strip.background = element_blank(),
+    
+    legend.key.size = unit(0.4, "cm"),   # Shrinks the legend keys (symbols)
+    legend.text = element_text(size = 8), # Shrinks the text for legend items
+    legend.title = element_text(size = 9) # Shrinks the legend title
+    
+    
+  )  
+
+
+get.odds.ratio <- function(odds.ratio,  this.col, muts.clinic, var.string=NULL, pos.var=1, neg.var=0, subclass.factors = c("CCS-A", "CCS-B") ){
+  
+  this.df <- tibble(muts.clinic) %>% dplyr::select(rna_class, all_of(this.col)) 
+  names(this.df)[2] <- 'var'
+  this.df$var[this.df$var > 1] <- 1
+  this.df.filt <- this.df %>% filter(var %in% c(pos.var, neg.var)) 
+  this.df.filt$var <- factor(this.df.filt$var, levels=c(pos.var, neg.var))
+  this.df.filt$rna_class <- factor(this.df.filt$rna_class, levels=subclass.factors)
+  
+  this.table <- table(this.df.filt)
+  
+  this.odds_ratio <- fisher.test(t(this.table), conf.int = T)
+  
+  if(is.null(var.string)){
+    var.string = this.col
+  }
+  
+  res.tmp <- cbind.data.frame('var'=var.string, 
+                              'lor'=log(this.odds_ratio$estimate), 
+                              'ci.lo' = log(this.odds_ratio$conf.int[1]),
+                              'ci.hi' = log(this.odds_ratio$conf.int[2]), 
+                              'p.value' = this.odds_ratio$p.value, 
+                              'k'=sum(this.table[,1]),
+                              'n'=sum(this.table)
+  )
+  
+  if(class(odds.ratio) == "logical"){
+    odds.ratio <- res.tmp
+  } else {
+    odds.ratio <- rbind.data.frame(odds.ratio, res.tmp)
+    
+  }
+  
+  return(odds.ratio)
+}
 
 
 

@@ -1,4 +1,3 @@
-```{r}
 
 #devtools::install_github("mg14/mg14")
 #devtools::install_github("gerstung-lab/MutationTimeR")
@@ -20,7 +19,7 @@ packageVersion('MutationTimeR')
 
 working_dir = '/Volumes/pcsi/users/fbeaudry/more.data/'
 
-script_dir='~/Documents/scripts/github/evolution/'
+script_dir='~/Documents/scripts/github/evolution/code/src/'
 source(paste0(script_dir,'/MutationTimeR/R/utils.R'))
 source(paste0(script_dir,'/MutationTimeR/R/MutationTime.R'))
 
@@ -105,7 +104,7 @@ for(tumour_id in these.samples){
 
 working_dir = '/Volumes/pcsi/users/fbeaudry/more.data/'
 
-these_samples <- sample_list$V2 #[150:169]
+these_samples <- sample_list$V2
 
 for(tumour_id in these_samples){
   
@@ -120,7 +119,7 @@ for(tumour_id in these_samples){
   if(file.exists(pyclone.file) & (file.exists(cnv_file) | file.exists(paste0(cnv_file,'.gz'))) & 
      file.exists(celluloid_params_file) & file.exists(vcfFileIn.snv) & file.exists(vcfFileIn.sv)){
     
-    cat('processing ',tumour_id,'\n')
+    message('processing ',tumour_id,'\n')
     
     
     pyclone <- fread(pyclone.file)
@@ -180,9 +179,9 @@ for(tumour_id in these_samples){
     ssm.vcf <- VariantAnnotation::rbind(vcf.snv, vcfFileIn.sv)
     
     #### TIMER: run analysis #####
-    cat('running core analysis... ')
+    message('running core analysis... ')
     molecular_time_list <- mutationTime(ssm.vcf, cn, clusters=clusters, purity=purity, sex='female', isWgd=classWgd(cn), n.boot=10, xmin=3, rho=0)
-    cat('done\n')
+    message('done\n')
     #### TIMER: output ####
     
     vcf_df <- cbind.data.frame(rownames(info(ssm.vcf)), molecular_time_list$snv_timing, 'alt_count' =getAltCount(ssm.vcf), 'tumor_depth'=getTumorDepth(ssm.vcf))
@@ -211,14 +210,12 @@ for(tumour_id in these_samples){
     )
     
   } else {
-    cat('some files missing for ',tumour_id,'\n')
+    warning('some files missing for ',tumour_id,'\n')
     
   }
 }
 
 #### JOIN: make evolution file ####
-
-
 
 first.clonality = T
 for(tumour_id in sample_list$V2){
@@ -251,7 +248,7 @@ for(tumour_id in sample_list$V2){
       file.remove(paste0('/Volumes/pcsi/users/fbeaudry/more.data/',tumour_id,'/',tumour_id,'.evolution.txt'))
     }
     
-    cat('processing ',tumour_id,'\n')
+    message('processing ',tumour_id,'\n')
     
     pyclone <- fread(pyclone.path) %>% dplyr::select(mutation_id, cluster_id, cellular_prevalence, cluster_assignment_prob)
     mobster <- fread(mobster.path) %>% full_join(pyclone, by=c( 'mutation_id'='mutation_id'))
@@ -428,6 +425,5 @@ for(tumour_id in sample_list$V2){
 
 }
   
-```  
 
 

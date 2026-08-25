@@ -7,32 +7,33 @@ Here, we assemble complex biomarker scores including homologous recombination de
 
 suppressPackageStartupMessages({
 
-library(data.table)
-library(ggplot2)
-library(mclust)
-library(dplyr)
-library(ggrepel)
-library(cowplot)
-library(survival)
-library(ggsurvfit)
-library(PNWColors)
-library(tidyr)
-library(EnvStats) #qqPlot
-library(PNWColors)
+  library(data.table)
+  library(ggplot2)
+  library(mclust)
+  library(dplyr)
+  library(ggrepel)
+  library(cowplot)
+  library(survival)
+  library(ggsurvfit)
+  library(PNWColors)
+  library(tidyr)
+  library(EnvStats) #qqPlot
+  library(PNWColors)
+  
 })
 
 '%ni%' <- function(x,y)!('%in%'(x,y))
 
-basedir = '~/Documents/scripts/github/btc-ccs/'
-secdir = '~/Documents/scripts/github/evolution/'
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
 
-source(paste0(basedir,"/bin/driver_functions.R"))
-chrLength_data <- fread(file.path(basedir,'/source_data/GRCh38_size.bed'))[c(1:23),]
+source(paste0(code.dir,"/bin/driver_functions.R"))
+chrLength_data <- fread(file.path(data.dir,'/source_data/GRCh38_size.bed'))[c(1:23),]
 
 
 #### WRITES TO FILE ####
 ROOT_DIR = '/Volumes/pcsi/'
-sample_list <- read.table(file.path(basedir,'/source_data/sample.list.txt'), header=F)
+sample_list <- read.table(file.path(data.dir,'/source_data/sample.list.txt'), header=F)
 
 rerun.pulls = F
 if(rerun.pulls){
@@ -81,6 +82,10 @@ if(rerun.pulls){
       summary.file <- paste0('/Volumes/pcsi/pipeline/hg38_production/',donor_id,'/',tumour_id,'/wgs/bwa/0.7.17/results.old/',tumour_id,'.summary.csv')
     }
     
+        if(!file.exists(summary.file)){
+      summary.file <- paste0('/Volumes/pcsi/pipeline/hg38_production/',donor_id,'/',tumour_id,'/wgs/bwa/0.7.17.nobqsr/results/',tumour_id,'.summary.csv')
+    }
+    
     if(file.exists(summary.file)){
       summary <- fread(summary.file)
       
@@ -95,42 +100,39 @@ if(rerun.pulls){
       cat('skipping ',summary.file,'\n')
     }
     
-    
-    
   }
   
-
   write.table(
     full.hrd,
-    file = file.path(basedir,'/results/hrd.txt'),
+    file = file.path(data.dir,'/results/hrd.txt'),
     row.names = FALSE, quote = FALSE, sep = "\t"
   )
   
   write.table(
     msi.table,
-    file = file.path(basedir,'/results/msi.txt'),
+    file = file.path(data.dir,'/results/msi.txt'),
     row.names = FALSE, quote = FALSE, sep = "\t"
   )
   write.table(
     full.summary,
-    file = file.path(secdir,'/results/summary.txt'),
+    file = file.path(data.dir,'/results/summary.txt'),
     row.names = FALSE, quote = FALSE, sep = "\t"
   )
   
   
 }
 
-summary <- fread(file.path(secdir,'/results/summary.txt'))
+summary <- fread(file.path(data.dir,'/results/summary.txt'))
 
 ```
 
-## Microsattelite Instability
-MSI is calculated with msisensor, with a cutoff at >15% of microsattelite sites unstable defined as MSI
+## Microsatelite Instability
+MSI is calculated with msisensor, with a cutoff at >15% of microsatelite sites unstable defined as MSI
 
 ```{r}
 
 #from grep of variants.tsv
-variants.ddr <- fread(file.path(secdir,'/results/variants.ddr.csv'))
+variants.ddr <- fread(file.path(data.dir,'/results/variants.ddr.csv'))
 length(unique(variants.ddr$tumour))
 
 variants.ddr <- variants.ddr %>% filter(rarity %in% c('rare', 'novel') | mutation_class %in% c('somatic sv', 'somatic cnv') )
@@ -142,7 +144,7 @@ variants.ddr$gene_line <- variants.ddr$gene
 variants.ddr$gene_line[variants.ddr$line == 'germline'] <- paste0('g',variants.ddr$gene[variants.ddr$line == 'germline'])
 
 
-msi <- fread(file.path(basedir,'/results/msi.txt'))
+msi <- fread(file.path(data.dir,'/results/msi.txt'))
 mmr_score <- summary %>% dplyr::select(tumour, mmr_score)
 length(unique(mmr_score$tumour))
 
@@ -222,7 +224,7 @@ HRD is calculated using HRDetect, with a cutoff of >92% probability as HRD+
 ```{r}
 HRD_GENES = c('XRCC2','BRCA1','BRCA2','gBRCA2','gPALB2')
 
-hrd <- fread(file.path(basedir,'/results/hrd.txt'))
+hrd <- fread(file.path(data.dir,'/results/hrd.txt'))
 length(unique(hrd$tumour))
 
 
@@ -301,7 +303,7 @@ tmb <- summary %>% dplyr::select(tumour, tmb,  indel_count, snv_count)
 tmb$indel_by_tmb <- (tmb$indel_count ) / (tmb$tmb * 3000)
 
 
-full.sv.cnv <- fread(file.path(secdir,'/results/sv.cnv.txt'))
+full.sv.cnv <- fread(file.path(data.dir,'/results/sv.cnv.txt'))
 length(unique(full.sv.cnv$tumour))
 
 full.sv.cnv$SV[is.na(full.sv.cnv$SV)] <- 'BND'
@@ -327,7 +329,7 @@ many.data$mutator_phenotype[many.data$Probability > 0.92] <- 'HRD'
 
 write.table(
   many.data,
-  file = paste0(basedir, "/results/mutation.landscape.txt"),
+  file = paste0(data.dir, "/results/mutation.landscape.txt"),
   row.names = FALSE, quote = FALSE, sep = "\t"
 )
 

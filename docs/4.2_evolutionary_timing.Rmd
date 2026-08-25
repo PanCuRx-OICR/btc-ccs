@@ -3,7 +3,7 @@ Here, we compare the evolutionary timing (using CNV) of signatures and drivers.
 
 ## pull data
 ```{r}
-
+suppressWarnings(
 suppressPackageStartupMessages({
 
 library(data.table)
@@ -13,14 +13,15 @@ library(ggplot2)
 library(tidyr)
 library(PNWColors)
   
-})
+}))
 
-basedir = '~/Documents/scripts/github/btc-ccs/'
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
 
-sample_list <- read.table(file.path(basedir,'/source_data/sample.list.txt'), header=F)
-ssm_drivers <- fread(paste0(basedir, "/results/TableS3.positioned_drivers_table.txt")) 
+sample_list <- read.table(file.path(data.dir,'/source_data/sample.list.txt'), header=F)
+ssm_drivers <- fread(paste0(data.dir, "/results/TableS3.positioned_drivers_table.txt")) 
 
-gene_set <- fread(file.path(basedir,'/source_data/fgs.txt'))
+gene_set <- fread(file.path(data.dir,'/source_data/fgs.txt'))
 gene_set$Chr <- paste0('chr',gene_set$Chr)
 genebed <- gene_set
 genebed <- genebed %>% filter(biotype=="protein_coding" & Length >= 500) %>%
@@ -36,18 +37,18 @@ if(pull.driver.evol){
   first.tumour = T
   for(tumour_id in sample_list$V2){
     
-    evolution.annotated.path <- paste0(working_dir,tumour_id,'/evolution/',tumour_id,'.evolution.txt')
+    evolution.annotated.path <- paste0(working_dir, tumour_id,'/evolution/',tumour_id,'.evolution.txt')
+    snv.info.annotated.path <- paste0(working_dir, tumour_id,'/pyclone/',tumour_id,'.snv.info.txt')
+    indel.info.annotated.path <- paste0(working_dir, tumour_id,'/pyclone/',tumour_id,'.indel.info.txt')
+    dbs.info.annotated.path <- paste0(working_dir, tumour_id,'/pyclone/',tumour_id,'.dbs.info.txt')
     
-    snv.info.annotated.path <- paste0(working_dir,tumour_id,'/pyclone/',tumour_id,'.snv.info.txt')
-    indel.info.annotated.path <- paste0(working_dir,tumour_id,'/pyclone/',tumour_id,'.indel.info.txt')
-    dbs.info.annotated.path <- paste0(working_dir,tumour_id,'/pyclone/',tumour_id,'.dbs.info.txt')
-    
-
     if(file.exists(evolution.annotated.path) & 
-       file.exists(snv.info.annotated.path) & file.exists(indel.info.annotated.path) & file.exists(dbs.info.annotated.path)
-       
+       file.exists(snv.info.annotated.path) & 
+       file.exists(indel.info.annotated.path) & 
+       file.exists(dbs.info.annotated.path)
        ){
-      cat(tumour_id, ' found\n')
+      
+      message(tumour_id, ' found')
       
       info.annotated <- rbind.data.frame(
         fread(snv.info.annotated.path),
@@ -55,50 +56,48 @@ if(pull.driver.evol){
         fread(dbs.info.annotated.path)
       )
       
-      info.annotated <- separate( info.annotated, ANNOVAR, into = c('region','gene'), sep = '\\|')
+      info.annotated <- separate( info.annotated, ANNOVAR, into = c('region','gene'), 
+                                  sep = '\\|', extra = 'drop')
       
       evol.data <- fread(evolution.annotated.path)
       evolution.annotated <- left_join(evol.data, info.annotated, by=c('ssm_id'='mutation_id'))
       
       these.calls <- evol.data %>% group_by(tumour_id, sig, call) %>% 
-        filter(!is.na(call) & !is.na(sig)) %>% tally() %>% reshape2::dcast(tumour_id + sig ~ call)
+        filter(!is.na(call) & !is.na(sig)) %>% tally() %>% reshape2::dcast(tumour_id + sig ~ call, value.var = 'n')
       these.timed <- evol.data %>% group_by(tumour_id, sig, CLS) %>% 
-        filter(!is.na(CLS) & !is.na(sig)) %>% tally() %>% reshape2::dcast(tumour_id + sig ~ CLS)
+        filter(!is.na(CLS) & !is.na(sig)) %>% tally() %>% reshape2::dcast(tumour_id + sig ~ CLS, value.var = 'n')
       
-      these.all <- full_join(these.calls, these.timed)
+      these.all <- full_join(these.calls, these.timed, by=c('tumour_id'='tumour_id', 'sig'='sig'))
       
       if(first.tumour){all.all <- these.all} else {all.all <- bind_rows(all.all, these.all)}
       
       this.ssm.driver.evolution <- evolution.annotated %>% 
         filter(gene %in% c(ssm_drivers$id,'BRAF','FGFR2','TERT','IDH2'))
-      
   
-      if(first.tumour){ssm.driver.evolution <- this.ssm.driver.evolution}else{ssm.driver.evolution <- rbind.data.frame(ssm.driver.evolution,this.ssm.driver.evolution)}
-      
-
+      if(first.tumour){ssm.driver.evolution <- this.ssm.driver.evolution; first.tumour = F
+      }else{
+      ssm.driver.evolution <- rbind.data.frame(ssm.driver.evolution,this.ssm.driver.evolution)}
       
     }
-  
+    else {
+      message('!! ',tumour_id, ' missing!!')
+    }
   }
   
   write.table(
     all.all,
-    file = file.path(basedir,'/results/collated.evol.txt'),
+    file = file.path(data.dir,'/results/collated.evol.txt'),
     row.names = FALSE, quote = FALSE, sep = "\t"
   )
-
   
   write.table(
     ssm.driver.evolution,
-    file = paste0(basedir, "/results/ssm.driver.evolution.txt"),
+    file = paste0(data.dir, "/results/ssm.driver.evolution.txt"),
     row.names = FALSE, quote = FALSE, sep = "\t"
   )
-  
-  
 
 }
 
-predicted.w.score <- fread(file.path(basedir,'results/cmstsp.class.txt') )
 
 ```
 
@@ -107,7 +106,7 @@ Here we compare timing of mutation signatures, both asking if they are late vers
 
 ```{r}
 
-collated.evol <- fread(file.path(basedir,'/results/collated.evol.txt'))
+collated.evol <- fread(file.path(data.dir,'/results/collated.evol.txt'))
 
 names(collated.evol)[names(collated.evol) == 'Tail'] <- 'sub.Tail'
 
@@ -119,9 +118,10 @@ collated.evol <- collated.evol %>%
 collated.evol$time.ratio <- log(collated.evol$`clonal [late]` / collated.evol$`clonal [early]` , 2)
 collated.evol$clone.ratio <- log(collated.evol$sub_total / collated.evol$Clonal, 2)
 
-collated.evol <- left_join(collated.evol, predicted.w.score, by=c('tumour_id'='sample'))
+predicted.w.score <- fread(file.path(data.dir,'/results/all.eCCS.txt') )
+collated.evol <- left_join(collated.evol, predicted.w.score, by=c('tumour_id'='Sample'))
 
-sigprofiler.meta <- fread(file.path(basedir,'/source_data/sigprofiler.meta.txt'))
+sigprofiler.meta <- fread(file.path(data.dir,'/source_data/sigprofiler.meta.txt'))
 
 collated.evol <- left_join(collated.evol, sigprofiler.meta, by=c('sig'='sig'))
 
@@ -131,10 +131,10 @@ collated.evol.short <- collated.evol %>% filter( !is.na(rna_class) &
                                                               'SBS1','SBS2','SBS5','SBS13','SBS31',
                                                               'DBS5'))
 
-collated.evol.short$rna_class.l <- factor(collated.evol.short$rna_class, levels = c("CMS-B","CMS-A"))
+collated.evol.short$rna_class.l <- factor(collated.evol.short$rna_class, levels = c("CCS-B","CCS-A"))
 
 df_rel <- collated.evol.short %>%
-  dplyr::filter(aetiology_short == "Clock-Like", rna_class.l == "CMS-B") %>%
+  dplyr::filter(aetiology_short == "APOBEC", rna_class.l == "CCS-B") %>% # Clock-Like
   dplyr::select(tumour_id, sig, `clonal [early]`, `clonal [late]`) %>%
   reshape2::melt(id.vars = c("tumour_id", "sig")) %>%
   dplyr::mutate(value = as.numeric(value)) %>%
@@ -151,6 +151,8 @@ df_rel <- collated.evol.short %>%
     pct = n_rel * 100
   )
 
+wilcox.test(df_rel$pct[df_rel$variable == 'clonal [early]'],
+            df_rel$pct[df_rel$variable == 'clonal [late]'])
 
 
 sig_timing.plot <- 
@@ -179,7 +181,7 @@ sig_timing.plot <-
       position = position_dodge(width = 0.8)
     ) +
     
-    scale_color_manual(values = c('CMS-A' = "#04597C", 'CMS-B' = "#EDA71A"), na.value = 'grey85') +
+    scale_color_manual(values = c('CCS-A' = "#04597C", 'CCS-B' = "#EDA71A"), na.value = 'grey85') +
     #scale_fill_manual(values  = c('CMS-A' = "#04597C", 'CMS-B' = "#EDA71A"), na.value = 'grey85') +
     
     theme_bw(base_size=10) +
@@ -195,48 +197,10 @@ sig_timing.plot <-
 
 sig_timing.plot
 
-ggsave(file.path( basedir,"/results/fig/FIG5e.sig_timing.svg"),plot =
+ggsave(file.path( data.dir,"/results/fig/FIG5e.sig_timing.svg"),plot =
          sig_timing.plot
 , device = "svg", width = 105, height = 60, units = 'mm', dpi= 72 )
 
- ggplot(
-    collated.evol.short,
-    aes(x = sig, y = time.ratio, color = rna_class.l)
-  ) +
-    facet_grid(. ~ aetiology_short, space = 'free', scales = 'free') +
-    geom_hline(yintercept = 0, color = 'grey70') +
-    
-    ggbeeswarm::geom_quasirandom(
-      aes(group = rna_class.l),
-      size=0.8,
-      dodge.width = 0.8,    
-      width = 0.2
-    ) +
-    
-    geom_boxplot(
-      aes(
-        
-        group = interaction(sig, rna_class.l)
-      ),
-      width = 0.7,
-      alpha = 0.5,
-      outlier.shape = NA,   
-      position = position_dodge(width = 0.8)
-    ) +
-    
-    scale_color_manual(values = c('CMS-A' = "#04597C", 'CMS-B' = "#EDA71A"), na.value = 'grey85') +
-    #scale_fill_manual(values  = c('CMS-A' = "#04597C", 'CMS-B' = "#EDA71A"), na.value = 'grey85') +
-    
-    theme_bw(base_size=10) +
-    theme(
-      plot.background = element_blank(),
-      panel.background = element_blank(),
-      panel.grid        = element_blank(),
-      strip.background  = element_blank(),
-      legend.position   = "top",
-    ) +
-    labs(x = NULL, y = "Timing Fold Change", color = NULL, fill = NULL) +
-    guides(color='none')
 
 ```
 
@@ -244,12 +208,12 @@ ggsave(file.path( basedir,"/results/fig/FIG5e.sig_timing.svg"),plot =
 We also checked out when drivers were mutated, but seems like most are early
 
 ```{r}
-ssm.driver.evolution <- fread( paste0(basedir, "/results/ssm.driver.evolution.txt"))
-ssm.driver.evolution <- left_join(ssm.driver.evolution, predicted.w.score, by=c('tumour_id'='sample'))
+ssm.driver.evolution <- fread( paste0(data.dir, "/results/ssm.driver.evolution.txt"))
+ssm.driver.evolution <- left_join(ssm.driver.evolution, predicted.w.score, by=c('tumour_id'='Sample'))
 
 ssm.driver.time <- ssm.driver.evolution %>% filter(region == 'exonic') %>% group_by(rna_class, gene, CLS) %>% tally()
 
-odds.ratio.df <- fread( file.path(basedir, "/results/driver.odds.txt"))
+odds.ratio.df <- fread( file.path(data.dir, "/results/driver.odds.txt"))
 
 odds.ratio.df <- odds.ratio.df %>%
   arrange(lor) %>%
@@ -281,7 +245,7 @@ We also looked at which mutational signatures are associated with mutations in w
 
 ssm.driver.time <- ssm.driver.evolution %>% group_by(rna_class, gene, call) %>% tally()
 
-sigprofiler.meta <- fread(file.path(basedir,'/source_data/sigprofiler.meta.txt'))
+sigprofiler.meta <- fread(file.path(data.dir,'/source_data/sigprofiler.meta.txt'))
 
 ssm.driver.evolution.sig <- left_join(ssm.driver.evolution, sigprofiler.meta, by=c('sig'='sig'))
 
@@ -292,21 +256,22 @@ ssm.driver.evolution.sig$aetiology_short[ssm.driver.evolution.sig$aetiology_shor
 ssm.driver.evolution.sig$aetiology_short[ssm.driver.evolution.sig$sig == 'ID5'] <- 'ID5'
 
 ssm.driver.signature <- ssm.driver.evolution.sig %>% 
-  filter(region == 'exonic' & call == 'Clonal') %>%
+  filter(region == 'exonic' ) %>%
   group_by(rna_class, gene, aetiology_short ) %>% tally()
 
 sbs.models <- ssm.driver.signature %>%
   mutate(n = case_when(
-    rna_class == "CMS-A" ~ -1 * n,
+    rna_class == "CCS-B" ~ -1 * n,
     TRUE                 ~ n
   ))
 
 sbs.models$Gene <- factor(sbs.models$gene, levels=order_vec)
+sbs.models$rna_class.f <- factor(sbs.models$rna_class, levels=c('CCS-B','CCS-A'))
 
-
+sbs.models.plot <- 
 ggplot(sbs.models %>% filter(!is.na(rna_class) & !is.na(Gene)), 
        aes(y=Gene, x=n, fill=aetiology_short)) + 
-  facet_grid(. ~rna_class, space='free',scale='free' ) +
+  facet_grid(. ~rna_class.f, space='free',scale='free' ) +
   geom_bar(stat='identity') +
   theme_bw(base_size=10)+
   
@@ -317,15 +282,21 @@ ggplot(sbs.models %>% filter(!is.na(rna_class) & !is.na(Gene)),
     'ID5'="#ffc3a3"
   )  , 
                      na.value = 'lightgrey') +
-  
+  guides(fill='none')+
   theme(
     strip.background = element_blank(),
     plot.background = element_blank(),
     panel.grid = element_blank(),
-    panel.background = element_blank()
+    panel.background = element_blank(),
+    axis.title.y = element_blank(),
     
-  )
+  ) + scale_x_continuous(breaks=c(-30,-20,-10,0,10,20), labels = c(30,20,10,0,10,20))
 
+sbs.models.plot
+
+ggsave(file.path( data.dir,"/results/fig/FIG5f.sbs.models.plot.svg"),plot =
+         sbs.models.plot
+, device = "svg", width = 50, height = 65, units = 'mm', dpi= 72 )
 
 
 ```

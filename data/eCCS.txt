@@ -1,0 +1,2 @@
+sample_id	rna_class	confidence.polarized
+this_sample	eCCS-B	0.125

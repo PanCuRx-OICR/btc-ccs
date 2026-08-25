@@ -1,3 +1,4 @@
+#! /usr/bin/env Rscript
 
 convert_w_to_tpm_like <- function(w.matrix, gene_set){
   
@@ -37,7 +38,7 @@ get_cms_from_pseudobulk <- function(tumour.subset_obj, confidence_cutoff  = 0.6,
                                     grouping_var = "sample_id", 
                                     basedir = '~/Documents/scripts/github/btc-ccs/'){
   
-  source(file.path(basedir,"/bin/BTC.functions.R"))
+
   classifier <- readRDS(file.path(basedir,'/results/tps.classifier.rds'))
   
   counts <- GetAssayData(tumour.subset_obj, slot = "counts")

@@ -9,6 +9,7 @@ Working with the gene-centric dndscv approach and the gene-agnostic ActiveDriver
 #devtools::install_github('https://github.com/reimandlab/ActiveDriverWGSR')
 #devtools::install_github("im3sanger/dndscv")
 
+suppressWarnings(
 suppressPackageStartupMessages({
   library(data.table)
   library(tidyr)
@@ -20,20 +21,23 @@ suppressPackageStartupMessages({
   library(ggplot2)
   library(ggrepel)
 })
+)
 
 packageVersion('ActiveDriverWGS')
 packageVersion('dndscv')
 
 '%ni%' <- function(x,y)!('%in%'(x,y))
 
-basedir = '~/Documents/scripts/github/btc-ccs/'
-secdir = '~/Documents/scripts/github/evolution/'
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
 
-source(paste0(basedir,"/bin/driver_functions.R"))
+source(paste0(code.dir,"/bin/driver_functions.R"))
+source( file.path(data.dir, "paths.R"))
+cluster.dir = file.path(cluster.dir, 'more.data')
 
 
 ##define genes (using dnds Granges)
-dndscv_reference_data_path <- file.path(secdir,'/code/src/dndscv_data/data/RefCDS_human_GRCh38_GencodeV18_recommended.rda')
+dndscv_reference_data_path <- file.path(data.dir,'/source_data/RefCDS_human_GRCh38_GencodeV18_recommended.rda')
 load(file=dndscv_reference_data_path)
 
 candidate_gene_exons <- data.frame(chr=paste0('chr',seqnames(gr_genes)),
@@ -46,16 +50,16 @@ make_vcfs=F
 if(make_vcfs){
   ## define sample set ##
   
-  sample.list <- fread(file.path(basedir,'/source_data/sample.list.txt'), header=F)
+  sample.list <- fread(file.path(data.dir,'/source_data/sample.list.txt'), header=F)
   
   collate_barebones_vcf_write(sample.list, 
-                              inpath='/Volumes/pcsi/users/fbeaudry/more.data/', 
-                              outpath=file.path(secdir,'/results/'), 
+                              inpath=cluster.dir, 
+                              outpath=file.path(data.dir,'/results/'), 
                               variant_types = c("indel","snv"))
 }
 
 
-all_mutations <- read.delim(file.path(secdir,"/results/all_mutations.txt"))
+all_mutations <- read.delim(file.path(data.dir,"/results/all_mutations.txt"))
 length(unique(all_mutations$patient))
 
 all_mutations <- all_mutations %>% arrange(patient,chr,pos1,pos2)
@@ -71,15 +75,13 @@ dndscv_muts$chr <- gsub(pattern = 'chr', replacement = '', dndscv_muts$chr)
 ```
 
 ## run driver analyses
-activedriver takes up to 12 hours so we don't run that everytime.
+activedriver takes up to 12 hours so we don't run that every time.
 
 ```{r}
 
 get_drivers = F
 if(get_drivers){
   
-  # dndscv_muts[c(182350,186482),]
-    
   result <- tryCatch({
     dndsout = dndscv(dndscv_muts, refdb =  dndscv_reference_data_path, outp = 3, cv = NULL)
   }, error = function(e) {
@@ -92,24 +94,74 @@ if(get_drivers){
   
   write.table(
     dndsout$sel_cv,
-    file = paste0(basedir, "/results/sel_cv.txt"),
+    file = paste0(data.dir, "/results/sel_cv.txt"),
     row.names = FALSE, quote = FALSE, sep = "\t"
   )
   
   write.table(
     dndsout$annotmuts,
-    file = paste0(basedir, "/results/dnds_annotation.txt"),
+    file = paste0(data.dir, "/results/dnds_annotation.txt"),
     row.names = FALSE, quote = FALSE, sep = "\t"
   )
   
-  active_driver_results = ActiveDriverWGS(mutations = all_mutations, elements = candidate_gene_exons, ref_genome = 'hg38')
+  active_driver_results = ActiveDriverWGS(mutations = all_mutations, 
+                                          elements = candidate_gene_exons, 
+                                          ref_genome = 'hg38')
   
   write.table(
     active_driver_results,
-    file = paste0(basedir, "/results/active_driver_results.txt"),
+    file = paste0(data.dir, "/results/active_driver_results.txt"),
     row.names = FALSE, quote = FALSE, sep = "\t"
   )
   
+  #### promoters ####
+  regulatory_features <- fread(file.path(data.dir,'source_data/homo_sapiens.GRCh38.Regulatory_Build.regulatory_features.20231016.gff'))
+  regulatory_features$V1 <- paste0('chr',regulatory_features$V1)
+  promoters <- regulatory_features[regulatory_features$V3 == 'promoter',]
+  
+  #https://genome-euro.ucsc.edu/cgi-bin/hgTables?db=hg38&hgta_group=hub_669493&hgta_track=hub_669493_epdnew&hgta_table=hub_669493_epdnew6&hgta_doSchema=describe+table+schema
+  #EPD based on experimental and bioinformatics TSS, so likely more strict
+  EPD_promoters <- fread(file.path(data.dir,'source_data/Hs_EPDnew_006_hg38.bed'))
+  
+  promoters$epd <- NA
+  for(this.epd.promoter in EPD_promoters$V4){
+    
+    this.chr <- EPD_promoters$V1[EPD_promoters$V4 == this.epd.promoter]
+    this.start <- EPD_promoters$V2[EPD_promoters$V4 == this.epd.promoter]
+    this.end <- EPD_promoters$V3[EPD_promoters$V4 == this.epd.promoter]
+    
+    this.ens.match <- promoters$epd[(promoters$V4 - 20) <= this.start & this.end  <= (promoters$V5 + 20) & promoters$V1 == this.chr ] 
+    if(length(this.ens.match) == 0 ){
+      cat(this.epd.promoter,' not found\n')
+    } else if(is.na(this.ens.match)){
+      promoters$epd[promoters$V4 <= this.start & this.end  <= promoters$V5 & promoters$V1 == this.chr ] <- this.epd.promoter
+    } else {
+      promoters$epd[promoters$V4 <= this.start & this.end  <= promoters$V5 & promoters$V1 == this.chr ] <- paste(this.ens.match, this.epd.promoter, sep = '; ')
+      
+    }
+    
+  }
+  
+  promoters <- promoters[!is.na(promoters$epd),]
+  
+  candidate_promoters <- data.frame(chr=promoters$V1,
+                                    start=promoters$V4,
+                                    end=promoters$V5,
+                                    id=promoters$epd)
+  
+  
+  all_mutations <- fread(file.path(data.dir,"/results/all_mutations.txt"))
+  all_mutations <- all_mutations[all_mutations$chr %in% unique(candidate_promoters$chr),]
+  
+  active_driver_results.promoters = ActiveDriverWGS(mutations = all_mutations, 
+                                                    elements = candidate_promoters, 
+                                                    ref_genome = 'hg38')
+  
+  write.table(
+    active_driver_results.promoters,
+    file = file.path(data.dir,"/results/active_driver_results.promoters.txt"),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
   
 }
 
@@ -120,15 +172,15 @@ Let's compare drivers discovered by the two methods. We manually review cases wi
 
 ```{r}
 
-active_driver_results <- fread(paste0(basedir, "/results/active_driver_results.txt"))
+active_driver_results <- fread(paste0(data.dir, "/results/active_driver_results.txt"))
 active_drivers <- active_driver_results$id[active_driver_results$fdr_element < 1 & active_driver_results$element_muts_obs > 4]
 
-sel_cv <- fread(paste0(basedir, "/results/sel_cv.txt"))
-dnds_annotation <- fread(paste0(basedir, "/results/dnds_annotation.txt"))
+sel_cv <- fread(paste0(data.dir, "/results/sel_cv.txt"))
+dnds_annotation <- fread(paste0(data.dir, "/results/dnds_annotation.txt"))
 
-all_genes <- fread(file.path(basedir,'/source_data/fgs.txt')) 
+all_genes <- fread(file.path(data.dir,'/source_data/fgs.txt')) 
 gene_set <- all_genes[all_genes$biotype=="protein_coding" & all_genes$Length >= 500,]
-cancerGeneList <- fread('~/Documents/scripts/github/evolution/source_data/cancerGeneList.tsv')
+#cancerGeneList <- fread(file.path(data.dir,'/source_data/cancerGeneList.tsv'))
 
 
 positioned_drivers <- left_join( active_driver_results, all_genes, by=c("id"="gene_name"))
@@ -165,8 +217,10 @@ ggplot(positioned_drivers_dnds.plot, aes(y=-log(fdr_element_sigfig), x=-log(qglo
   
   geom_point(size=2.5, color='grey') +  
   geom_point(size=2.5, data = ~ subset(., id %in% sig_id)) +  
-  geom_label_repel(aes(label=id),  data = ~ subset(., id %in% sig_id), size=2, max.overlaps =20,
-                   box.padding = 0.75, force = 0.25, max.time = 3,  min.segment.length = 0) +
+  geom_label_repel(aes(label=id),  
+                   data = ~ subset(., id %in% sig_id), size=3, max.overlaps =20,
+                   box.padding = 0.75, force = 0.1, label.padding = 0.1,
+                   max.time = 3) +
   
   theme_bw(base_size=10) + 
   theme(
@@ -180,7 +234,8 @@ ggplot(positioned_drivers_dnds.plot, aes(y=-log(fdr_element_sigfig), x=-log(qglo
   labs(y="region enrichment FDR (log)",x="dnds q-value (log)")
 
 drivers.pvalues.plot
-ggsave(paste0(basedir, "/results/fig/FIG3A.drivers.pvalues.svg"), plot = 
+
+ggsave(file.path(data.dir, "/results/fig/FIG4A.drivers.pvalues.svg"), plot = 
        drivers.pvalues.plot  
 , device = "svg",width = 75, height = 75 , units='mm', dpi=72 )
 
@@ -191,80 +246,41 @@ We also compared global signals of selection between the subtypes - although the
 
 ```{r}
 
-predicted.w.score <- fread(file.path(basedir,'/results/all.eCMS.txt') )
-predicted.w.score <- predicted.w.score %>% filter(`Sample Source(FFPE, FF)` == 'FF')
+predicted.w.score <- fread(file.path(data.dir,'/results/all.eCCS.txt') )
 
-dndscv_muts.cmsa <- dndscv_muts %>% filter(sampleID %in% predicted.w.score$sample[predicted.w.score$rna_class == 'CMS-A' ])
-dndsout.cmsa = dndscv(dndscv_muts.cmsa, refdb =  dndscv_reference_data_path, cv = NULL)
-
-cmsa.selection <- dndsout.cmsa$sel_cv
-cmsa.annot <- dndsout.cmsa$annotmuts
-
-dndscv_muts.cmsb <- dndscv_muts %>% filter(sampleID %in% predicted.w.score$sample[predicted.w.score$rna_class == 'CMS-B' ])
-dndsout.cmsb = dndscv(dndscv_muts.cmsb, refdb =  dndscv_reference_data_path, cv = NULL)
-
-cmsb.selection <- dndsout.cmsb$sel_cv
-
-cmsa.genes <- cmsa.selection %>% dplyr::select(gene_name, qglobal_cv)
-names(cmsa.genes)[2] <- 'cmsa'
-cmsb.genes <- cmsb.selection %>% dplyr::select(gene_name, qglobal_cv)
-names(cmsb.genes)[2] <- 'cmsb'
-cms.genes <- full_join(cmsa.genes, cmsb.genes, by=c('gene_name'='gene_name'))
-
-cms.genes$type <- NA
-cms.genes$type[cms.genes$cmsa > cms.genes$cmsb] <- 'CMS-A'
-cms.genes$type[cms.genes$cmsa < cms.genes$cmsb] <- 'CMS-B'
-
-cms.drivers.pvalues.plot <- 
-ggplot(cms.genes  %>% filter(gene_name %ni% c('USP8','MN1','PTH2') & (cmsa < 0.99 | cmsb < 0.99)), aes(x=-log(cmsa), y=-log(cmsb))) +
-  geom_abline(color='grey80',intercept = -log(0.05), slope=-1, linetype='dotted')+
-  geom_point(aes(color=type)) +
-  geom_label_repel(aes(label=gene_name, color=type),  data = ~ subset(., cmsa < 0.05 | cmsb < 0.05  ), size=2, max.overlaps =20,
-                   box.padding = 0.75, force = 0.25, max.time = 3,  min.segment.length = 0) +
+cms.drivers.pvalues.plot <- compare_ccs_dnds(dndscv_muts, predicted.w.score, 'all')
   
-  scale_color_manual(  values=c(
-    "CMS-B"    = "#EDA71A" , 
-    "CMS-A" = "#04597C" 
-  )) + theme_bw(base_size=10)+
-  theme(panel.background = element_blank(), 
-        plot.margin = unit(c(0, 0, 0, 0), "mm"),
-        panel.grid = element_blank(), 
-        plot.background = element_blank()) +
-  labs(x='',y='') + guides(color='none')+ 
-  
-  labs(y="CMS-B (log q)",x="CMS-A (log q)")
-
 cms.drivers.pvalues.plot
 
-ggsave(paste0(basedir, "/results/fig/FIGS4a.cms.drivers.pvalues.svg"), plot = 
+ggsave(paste0(data.dir, "/results/fig/FIGS4b.ccs.drivers.pvalues.svg"), plot = 
   cms.drivers.pvalues.plot         
-, device = "svg",width = 75, height = 75 , units='mm', dpi=72 )
+, device = "svg",width = 65, height = 65 , units='mm', dpi=72 )
 
-global.cmsa <- dndsout.cmsa$globaldnds
-global.cmsa$rna_class <- 'CMS-A'
-global.cmsb <- dndsout.cmsb$globaldnds
-global.cmsb$rna_class <- 'CMS-B'
+clinic.sample.info <- fread(file.path(data.dir,"/results/samples.info.txt"), header=T)
+primaries <- clinic.sample.info$Sample[clinic.sample.info$Sample_Progression == 'Primary']
+naive <- clinic.sample.info$Sample[clinic.sample.info$tissue_before_chemo == T]
 
-global.selection <- rbind.data.frame(global.cmsa, global.cmsb)
+ccs.dnds.primaries.plot <- 
+  compare_ccs_dnds(dndscv_muts %>% filter(sampleID %in% primaries), 
+                 predicted.w.score, 
+                 'primaries')
 
-ggplot(global.selection , aes(x=name, y=mle, color=rna_class)) +
-  geom_hline(yintercept = 1, color='grey80')+
-  geom_point(position = position_dodge(width=0.2)) +
-  geom_errorbar(aes(ymin = cilow, ymax = cihigh), width = 0.2, position = position_dodge(width=0.2)) +
-  scale_color_manual(  values=c(
-    "CMS-B"    = "#EDA71A" , 
-    "CMS-A" = "#04597C" 
-  )) + theme_bw(base_size=10)+
-  theme(panel.background = element_blank(), 
-        panel.grid = element_blank(), 
-        plot.background = element_blank()) +
-  labs(x='',y='Rate of Adaptation (dN/dS)') + guides(color='none')
+ccs.dnds.primaries.plot
 
-write.table(
-  global.selection,
-  file = paste0(basedir, "/results/global.selection.txt"),
-  row.names = FALSE, quote = FALSE, sep = "\t"
-)
+ggsave(paste0(data.dir, "/results/fig/FIGS4b.ccs.drivers.primaries.svg"), plot = 
+  ccs.dnds.primaries.plot         
+, device = "svg",width = 65, height = 65 , units='mm', dpi=72 )
+
+ccs.dnds.naive.plot <- 
+  compare_ccs_dnds(dndscv_muts %>% filter(sampleID %in% naive), 
+                 predicted.w.score, 
+                 'treatment naive')
+
+ccs.dnds.naive.plot
+
+ggsave(paste0(data.dir, "/results/fig/FIGS4b.ccs.drivers.naive.svg"), plot = 
+  ccs.dnds.naive.plot         
+, device = "svg",width = 65, height = 65 , units='mm', dpi=72 )
 
 ```
 
@@ -272,7 +288,8 @@ write.table(
 I think this is a new type of analysis. What we wanted to do originally was rescue tumor suppressor genes that were just under the FDR threshold by showing that there was more LOH at those sites than expected by chance. We actually didn't end up recovering anything this way, but we found interesting results nonetheless. 
 
 ```{r}
-gene_set <- fread(file.path(basedir,'/source_data/fgs.txt'))
+
+gene_set <- fread(file.path(data.dir,'/source_data/fgs.txt'))
 gene_set$Chr <- paste0('chr', gene_set$Chr)
 
 genebed <- gene_set
@@ -280,13 +297,13 @@ genebed <- genebed %>% filter(biotype=="protein_coding" & Length >= 500)
 genebed <- genebed %>% dplyr::select(Chr, Start,   End,ensid, gene_name)
 names(genebed) <- c('chrom',	'start',	'end',	'geneid',	'genename')
 
-dnds_annotation <- fread(paste0(basedir, "/results/dnds_annotation.txt"))
+dnds_annotation <- fread(paste0(data.dir, "/results/dnds_annotation.txt"))
 
 get_loh= F
 if(get_loh){
   
-  hpc_dir = '/Volumes/pcsi/users/fbeaudry/more.data/'
-  all.cnv <- fread(file.path(hpc_dir, 'all.cnv.txt'))
+  
+  all.cnv <- fread(file.path(cluster.dir, 'all.cnv.txt'))
   length(unique(all.cnv$sampleID))
   
   all.cnv$toy.marker <- 1
@@ -352,13 +369,13 @@ if(get_loh){
   loh.hit.table <- loh.hit.table %>% arrange( loh.pvalue)
   write.table(
     loh.hit.table,
-    file = file.path(basedir, "/results/loh.p.txt"),
+    file = file.path(data.dir, "/results/loh.p.txt"),
     row.names = FALSE, quote = FALSE, sep = "\t"
   )
   
 }
 
-loh.hit.table <- fread(file.path(basedir, "/results/loh.p.txt"))
+loh.hit.table <- fread(file.path(data.dir, "/results/loh.p.txt"))
 
 loh.hit.table$fdr <- p.adjust(loh.hit.table$loh.pvalue, method='fdr')
 loh_sig_id <- loh.hit.table$gene[loh.hit.table$fdr < 0.05 ]
@@ -371,8 +388,10 @@ ggplot(loh.hit.table, aes(x=loh.LOR, y= -log(fdr))) +
   geom_vline(xintercept = 0, color='grey')+
   geom_point(size=2.5, color='grey') +  
   geom_point(size=2.5, data = ~ subset(., gene %in% loh_sig_id)) +  
-  geom_label_repel(aes(label=gene),  data = ~ subset(., gene %in% loh_sig_id), size=2, 
-                   box.padding = 0.5, force = 1, max.time = 3,  min.segment.length = 0) +
+  geom_label_repel(aes(label=gene),  data = ~ subset(., gene %in% loh_sig_id), size=3, 
+                   box.padding = 0.5, force = 1, max.time = 3,  label.padding = 0.1, min.segment.length = 0) +
+
+  
   theme_bw(base_size=10) + 
   
   theme(
@@ -384,7 +403,8 @@ ggplot(loh.hit.table, aes(x=loh.LOR, y= -log(fdr))) +
   ) + labs(x='LOH + mutant odds (log)', y='FDR (-log)')
 
 drivers.loh.plot
-ggsave(paste0(basedir, "/results/fig/FIGS4d.drivers.loh.svg"), plot = 
+
+ggsave(paste0(data.dir, "/results/fig/FIGS4d.drivers.loh.svg"), plot = 
          drivers.loh.plot
 , device = "svg",width = 60, height = 75 , units='mm' , dpi=72 )
 
@@ -431,9 +451,11 @@ positioned_drivers_table[] <- lapply(positioned_drivers_table, format_sigfig)
 
 write.table(
   positioned_drivers_table,
-  file = paste0(basedir, "/results/TableS3.positioned_drivers_table.txt"),
+  file = paste0(data.dir, "/results/TableS3.positioned_drivers_table.txt"),
   row.names = FALSE, quote = FALSE, sep = "\t"
 )
+
+positioned_drivers_table
 
 ```
 

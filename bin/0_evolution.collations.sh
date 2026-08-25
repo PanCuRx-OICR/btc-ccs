@@ -30,7 +30,7 @@ conda activate pyclone-vi
 script_dir=/.mounts/labs/PCSI/users/fbeaudry/more.data/btc.scripts/
 data_dir=/.mounts/labs/PCSI/users/fbeaudry/
 work_dir=/.mounts/labs/PCSI/users/fbeaudry/more.data/
-sample_file=more.sample.list.txt
+sample_file=sample.list.txt
 
 mysamples=$( awk '{ print $2 }' $data_dir/${sample_file} | tr '\n' ' ' )
 
@@ -68,7 +68,7 @@ work_dir=/.mounts/labs/PCSI/users/fbeaudry/more.data/
 cd ${work_dir}
 
 data_dir=/.mounts/labs/PCSI/users/fbeaudry/
-sample_file=more.sample.list.txt
+sample_file=sample.list.txt
 
 mysamples=$( awk '{ print $2 }' $data_dir/${sample_file} | tr '\n' ' ' )
 
@@ -122,9 +122,9 @@ work_dir=/.mounts/labs/PCSI/users/fbeaudry/more.data/${tumour_id}/
 
 mkdir -p ${work_dir}/sigprofiler/
 
-rm ${work_dir}/sigprofiler/${tumour_id}.sig.out.log ${work_dir}/sigprofiler/${tumour_id}.sig.err.log 
+rm ${work_dir}/sigprofiler/${tumour_id}.sig.log.txt
 
-qsub -P pcsi -l h_vmem=6G,h_rt=2:0:0:0 -cwd -V  -N ${tumour_id}.sig -o ${work_dir}/sigprofiler/${tumour_id}.sig.out.log -e ${work_dir}/sigprofiler/${tumour_id}.sig.err.log /.mounts/labs/PCSI/users/fbeaudry/more.data/btc.scripts/sigprofiler.sh ${tumour_id} ${donor}
+qsub -P pcsi -l h_vmem=6G,h_rt=2:0:0:0 -cwd -V  -N ${tumour_id}.sig -o ${work_dir}/sigprofiler/${tumour_id}.sig.log.txt -e ${work_dir}/sigprofiler/${tumour_id}.sig.log.txt /.mounts/labs/PCSI/users/fbeaudry/more.data/btc.scripts/sigprofiler.sh ${tumour_id} ${donor}
 
 done
 
@@ -215,15 +215,13 @@ done
 #cd /.mounts/labs/PCSI/users/fbeaudry/gistic/MCR_Installer
 # ./install -mode silent -agreeToLicense yes -destinationFolder /.mounts/labs/PCSI/users/fbeaudry/gistic/MATLAB_Compiler_Runtime
 
-
-
 script_dir=/.mounts/labs/PCSI/users/fbeaudry/more.data/celluloid/
 data_dir=/.mounts/labs/PCSI/users/fbeaudry/
 refgenefile=/.mounts/labs/PCSI/users/fbeaudry/gistic/refgenefiles/hg38.UCSC.add_miR.160920.refgene.mat
 
 awk '{print $2}' $data_dir/sample.list.txt >$data_dir/all.list.txt
  
-for set in  CMSA CMSB all
+for set in  CCSA CCSB all
 do
 
 cd $data_dir
@@ -273,10 +271,26 @@ echo ${sample}
 do_nor=$(awk -F'\t' -v tumor=${sample} '$3==tumor {print $1}' $data_dir/every.sample.list.txt )
 donor=$(echo ${do_nor} | tr -d _)
 
-sed -n '8p' /.mounts/labs/PCSI/pipeline/hg38_production/${donor}/${sample}/wgs/bwa/0.7.17/coverage/${sample}_coverage_collapsed.metrics | awk -v sample=${sample} '{print sample, "T", $2, $4}' >>${data_dir}/btc.coverage.txt
+path=/.mounts/labs/PCSI/pipeline/hg38_production/${donor}/${sample}/wgs/bwa/0.7.17.nobqsr/coverage/${sample}_coverage_collapsed.metrics
+
+if [[ ! -d "$path" ]]; then
+    path=/.mounts/labs/PCSI/pipeline/hg38_production/${donor}/${sample}/wgs/bwa/0.7.17/coverage/${sample}_coverage_collapsed.metrics
+fi
+
+sed -n '8p' $path | awk -v sample=${sample} '{print sample, "T", $2, $4}' >>${data_dir}/btc.coverage.txt
+
+path=/.mounts/labs/PCSI/pipeline/hg38_production/${donor}/${sample}/wgs/bwa/0.7.17.nobqsr/celluloidXY/v0.11.7/
+
+if [[ ! -d "$path" ]]; then
+    path=/.mounts/labs/PCSI/pipeline/hg38_production/${donor}/${sample}/wgs/bwa/0.7.17/celluloidXY/v0.11.7/solution/parameters_${sample}.txt
+else
+    path=/.mounts/labs/PCSI/pipeline/hg38_production/${donor}/${sample}/wgs/bwa/0.7.17.nobqsr/celluloidXY/v0.11.7/solution/parameters_${sample}.txt
+fi
+
+
+cat $path | awk -v sample=${sample} '$1 !~ "value" {print sample, $4, $5}' >>${data_dir}/btc.cellularity.pipeline.txt
 
 cat /.mounts/labs/PCSI/users/fbeaudry/more.data/${sample}/celluloid/solution/parameters_${sample}.txt | awk -v sample=${sample} '$1 !~ "value" {print sample, $4, $5}' >>${data_dir}/btc.cellularity.curated.txt
-cat /.mounts/labs/PCSI/pipeline/hg38_production/${donor}/${sample}/wgs/bwa/0.7.17/celluloidXY/v0.11.7/solution/parameters_${sample}.txt | awk -v sample=${sample} '$1 !~ "value" {print sample, $4, $5}' >>${data_dir}/btc.cellularity.pipeline.txt
 
 cat /.mounts/labs/PCSI/pipeline/hg38_production/${donor}/${sample}/rna/star/2.7.4a/collapsed/Log.final.out | awk -F'|' -v tumor=${sample} '$1 ~ "Uniquely mapped reads number" {print tumor"\t"$2}' >>${data_dir}/btc.rna.coverage.txt
 
@@ -325,12 +339,11 @@ do
 
 echo $this_gene
 
-
 if test -f ${core_dir}/${donor}/${sample}/wgs/bwa/0.7.17/results/${sample}.variants.csv
 then
 awk '$1 !~ "donor" {print}' ${core_dir}/${donor}/${sample}/wgs/bwa/0.7.17/results/${sample}.variants.csv | grep $this_gene |  awk -F',' -v this_gene=$this_gene '$10 == this_gene {print}'  >>  $work_dir/variants.ddr.csv
 else
-awk '$1 !~ "donor" {print}' ${core_dir}/${donor}/${sample}/wgs/bwa/0.7.17/results.old/${sample}.variants.csv | grep $this_gene |  awk -F',' -v this_gene=$this_gene '$10 == this_gene {print}'  >>  $work_dir/variants.ddr.csv
+awk '$1 !~ "donor" {print}' ${core_dir}/${donor}/${sample}/wgs/bwa/0.7.17.nobqsr/results/${sample}.variants.csv | grep $this_gene |  awk -F',' -v this_gene=$this_gene '$10 == this_gene {print}'  >>  $work_dir/variants.ddr.csv
 fi
 
 done < ${data_dir}/ddr.genes
@@ -363,38 +376,6 @@ awk -F '\t' -v donor=$donor -v sample=$sample '$1 !~ "#tracking_id" {print donor
 done 
 
 
-#### LOY #####
-
-data_dir=/.mounts/labs/PCSI/users/fbeaudry/
-work_dir=/.mounts/labs/PCSI/users/fbeaudry/more.data/
-
-mysamples=$( awk '{ print $2 }' $data_dir/sample.list.txt | tr '\n' ' ' )
-
-rm ${work_dir}/Y_segments.txt ${work_dir}/Y_rna.txt rm ${work_dir}/sex.txt
-for tumor in ${mysamples[@]}
-do
-echo ${tumor}
-
-donor=$(awk -v tumor=${tumor} '$2==tumor {print $1}' $data_dir/sample.list.txt  )
-normal=$(awk -v tumor=${tumor} '$2==tumor {print $3}' $data_dir/sample.list.txt  )
-
-echo ${donor}
-
-#celluloid
-
-awk -v tumour_id=$tumor '{print tumour_id"\t"$1}' /.mounts/labs/PCSI/users/fbeaudry/more.data/${tumor}/sex/${normal}.sex.txt >>${work_dir}/sex.txt
-
-#segments
-zcat /.mounts/labs/PCSI/users/fbeaudry/more.data/${tumor}/celluloid/solution/segments_${tumor}.txt.gz | awk '$1 ~ "chr23" {print }'  >>${work_dir}/Y_segments.txt
-zcat /.mounts/labs/PCSI/users/fbeaudry/more.data/${tumor}/celluloid/solution/segments_${tumor}.txt.gz | awk '$1 ~ "chr24" {print }' >>${work_dir}/Y_segments.txt
-
-#rna
-awk -v tumour_id=$tumor '$3 ~ "chrX" {print tumour_id"\t"$2"\t"$7"\t"$8}' /.mounts/labs/PCSI/pipeline/hg38_production/${donor}/${tumor}/rna/star/2.7.4a/stringtie/2.0.6/${tumor}_stringtie_abundance.txt >>${work_dir}/Y_rna.txt
-awk -v tumour_id=$tumor '$3 ~ "chrY" {print tumour_id"\t"$2"\t"$7"\t"$8}' /.mounts/labs/PCSI/pipeline/hg38_production/${donor}/${tumor}/rna/star/2.7.4a/stringtie/2.0.6/${tumor}_stringtie_abundance.txt >>${work_dir}/Y_rna.txt
-
-
-done
-
 
 ##### RNA NMF ####
 
@@ -402,12 +383,14 @@ conda activate /.mounts/labs/PCSI/users/fbeaudry/nmf_env
 
 cd /.mounts/labs/PCSI/users/fbeaudry/nmf_analysis
 
-script_dir=/.mounts/labs/PCSI/users/fbeaudry/nmf_analysis/
+base_dir=/.mounts/labs/PCSI/users/fbeaudry/nmf_analysis/
 
-rm nmf.out.log.txt nmf.out.err.txt
-rm *.rds *.csv
-qsub -P pcsi -l h_vmem=60G,h_rt=4:0:0:0 -cwd -V  -N nmf -o nmf.out.log.txt -e nmf.out.err.txt  ${script_dir}/launch_cluster.nmf.sh 
+#primary icca whole
+for cohort in naive
+do
 
-script_dir=/.mounts/labs/PCSI/users/fbeaudry/nmf_analysis/cmsa/
-qsub -P pcsi -l h_vmem=60G,h_rt=4:0:0:0 -cwd -V  -N nmf -o ${script_dir}/nmf.out.log.txt -e ${script_dir}/nmf.out.err.txt  ${script_dir}/launch_cluster.nmf.cmsa.sh 
+cohort_dir=${base_dir}/${cohort}
 
+qsub -P pcsi -l h_vmem=60G,h_rt=4:0:0:0 -cwd -V  -N nmf.${cohort} -o ${cohort_dir}/nmf.log.txt -e ${cohort_dir}/nmf.log.txt ${base_dir}/launch_cluster.nmf.sh ${cohort_dir}/rna.read.${cohort}.txt ${cohort_dir}/
+
+done
