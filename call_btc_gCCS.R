@@ -22,7 +22,7 @@ vaf_path <- opt$vaf_path
 bed_path <- opt$bed_path
 cytoband_path <- opt$cytoband_path
 
-source('./btc_CCS.fxn.R')
+source('./bin/btc_CCS.fxn.R')
 
 #seg_path= "./data/example.seg"
 #vaf_path= "./data/mean_vaf.txt"

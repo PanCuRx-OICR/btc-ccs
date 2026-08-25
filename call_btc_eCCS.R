@@ -16,7 +16,7 @@ file_path <- opt$input
 model_path <- opt$model
 output_path <- opt$output
 
-source('./btc_CCS.fxn.R')
+source('./bin/btc_CCS.fxn.R')
 
 #file_path= "./data/tpm.txt"
 #model_path="./data/LBR.tps.classifier.rds"
