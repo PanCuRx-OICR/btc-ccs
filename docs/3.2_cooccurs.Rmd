@@ -1,0 +1,399 @@
+# Test co-occurence of drivers
+Now that we have our drivers, we ask how often do they occur together and are some mutually exclusive (and of course does this connect to CCS)? 
+
+## Data prep
+You may notice in data prep that there are only 168 (not 169) samples in this section: one case has no statistically-supported driver so there is not co-occurence to test.
+
+```{r}
+suppressWarnings(
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(pvclust)
+  library(cluster)
+  library(Rediscover)
+  library(qvalue)
+  library(PNWColors)
+  library(ggplot2)
+  library(cowplot)
+  library(ggrepel)
+  library(ggdendroplot)
+  library(survival)
+  library(survminer)
+}))
+
+packageVersion('Rediscover')
+
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
+
+source( file.path(code.dir, "bin/BTC.functions.R"))
+source( file.path(code.dir, "bin/integrated_driver.functions.R"))
+
+cols_names = c('donor', 'gene', 'type')
+
+ssm_drivers <- fread(file.path(data.dir, "/results/TableS3.positioned_drivers_table.txt")) 
+dnds_annotation <- fread(file.path(data.dir, "/results/dnds_annotation.txt"))
+length(unique(dnds_annotation$sampleID))
+gene.ssm <- dnds_annotation %>% dplyr::select(sampleID, gene, impact)
+ssm.driver.hits <- gene.ssm %>% filter(gene %in% c(ssm_drivers$id, 'FGFR2','CDKN2A.p16INK4a', 'CDKN2A.p14arf'))
+names(ssm.driver.hits) <- cols_names
+
+all_mutations <- fread(paste0(data.dir, "/results/all_mutations.txt"))
+tert_mutations <- all_mutations %>% filter(chr == 'chr5' & pos1 %in% c(1295135, 1295113))
+tert_mutations$gene <- 'TERT'
+tert_mutations$type <- 'promoter'
+tert_mutations <- tert_mutations %>% dplyr::select(patient, gene, type)
+names(tert_mutations) <- cols_names
+
+ssm.driver.hits <- rbind.data.frame(ssm.driver.hits, tert_mutations)
+
+full.sv.cnv <- fread(file.path(data.dir, '/results/sv.cnv.txt'))
+gene_set <- fread(file.path(data.dir, '/source_data/fgs.txt'))
+gene_set$Chr <- paste0('chr', gene_set$Chr)
+
+driver.sv <- 
+  rbind.data.frame(
+    get.sv.window('TERT', gene_set, 5000, full.sv.cnv),
+    get.sv.window('FGFR2', gene_set, 5000, full.sv.cnv),
+    get.sv.window('MDM2', gene_set, 5000, full.sv.cnv),
+    get.sv.window('CDK6', gene_set, 5000, full.sv.cnv),
+    get.sv.window('SMAD4', gene_set, 5000, full.sv.cnv),
+    get.sv.window('CDKN2A', gene_set, 5000, full.sv.cnv)
+  )
+
+gene.sv <- unique(driver.sv %>% dplyr::select(tumour, GENE, SV))
+gene.sv %>% group_by(GENE) %>% tally()
+sv.driver.hits <- gene.sv %>% filter(GENE %in% c('TERT','FGFR2','SMAD4','CDKN2A'))
+names(sv.driver.hits) <- cols_names
+
+full.mutations <- rbind.data.frame(sv.driver.hits, ssm.driver.hits) #cnv.driver.hits, btc.fusions, 
+
+## a little filtering
+full.mutations <-full.mutations %>% filter( type %ni% c('Synonymous'))
+
+full.mutations$gene[full.mutations$gene %in% c('CDKN2A.p16INK4a', 'CDKN2A.p14arf','CDKN2B-AS1')] <- 'CDKN2A'
+
+length(unique(dnds_annotation$sampleID))
+
+# incl. donors without actions in the onco plot
+no_variants <- dnds_annotation[dnds_annotation$sampleID %ni% unique(full.mutations$donor) ,]
+names(no_variants)[names(no_variants) == "sampleID"] <- "donor"
+no_variants$gene <-NA
+no_variants$type <- NA
+no_variants <- unique(no_variants[,c("donor","gene","type")])
+
+full.mutations <- rbind.data.frame(full.mutations, no_variants)
+
+
+full.mutations$type <- full.mutations$type
+full.mutations$type[full.mutations$type %in% c('DEL','Deletion')] <- 'Deletion'
+full.mutations$type[full.mutations$type %in% c('DUP','Amplification')] <- 'Amplification'
+full.mutations$type[full.mutations$type %in% c('INV','TRA', 'Fusion')] <- 'Translocation/Fusion'
+full.mutations$type[full.mutations$type %in% c('no-SNV','Missense','Nonsense','Essential_Splice','promoter')] <- 'Small Substitution'
+full.mutations$type[full.mutations$type %in% c('CLU','BND')] <- 'Complex SV'
+full.mutations <- unique(full.mutations)
+
+```
+
+## Visualize occurences using oncoplot
+
+```{r}
+
+driver.mutations <- make_oncoplot_factor_order(full.mutations)
+driver.mutations <- unique(driver.mutations)
+
+key_frequency <- get_gene_frequencies(driver.mutations)
+
+fz_plot <- 
+  ggplot(key_frequency , aes(x=frequency*100, y=gene_factor)) + 
+  geom_bar(stat = "identity")+
+  scale_y_discrete(limits=rev) +
+  theme_bw(base_size=10)+ 
+  labs(x="Cohort Frequency (%)",fill="OncoKb Level") + 
+  guides(fill = guide_legend(title.position="top")) +
+  #scale_fill_grey()+
+  this_theme + 
+  theme(
+    legend.position = "top" ,
+    plot.margin = unit(c(0,1,0,-1), "lines"),
+    axis.text.y =element_blank(),
+    axis.title.y =element_blank(),
+    axis.ticks.y =element_blank(),
+  ) 
+
+onco_plot <- 
+  ggplot(driver.mutations, aes(x=donor_factor, y=gene_factor)) + 
+  geom_tile(aes(fill=type)) + 
+    theme_bw(base_size=10) +
+  scale_y_discrete(limits=rev, breaks=na.omit(unique(driver.mutations$gene_factor))) +
+  labs(x='',y='' )+ 
+  
+  scale_fill_manual(values=pnw_palette(name="Lake",n=8)[c(2:7)], na.value = 'white') +
+    this_theme + 
+    theme(legend.position = "bottom" , 
+       #   axis.text.y = element_text(size = 10),
+          axis.ticks.x = element_blank(),
+          axis.text.x = element_blank()
+          
+          )
+
+
+width_gap = -0.09
+
+this.plot <- plot_grid(onco_plot,NULL, fz_plot,  rel_widths = c(0.8,width_gap,0.2 ), ncol = 3, align = 'hv', axis = "rlbt")
+this.plot
+ggsave( paste0(data.dir, "/results/fig/figs4c.current_oncoplot.svg"), 
+        plot =  this.plot , 
+        device = "svg", width = 200, height = 80 , units='mm' , dpi=72)
+
+write.table(
+  driver.mutations %>% dplyr::select(donor,gene,type),
+  file = paste0(data.dir, "/results/driver.landscape.txt"),
+  row.names = FALSE, quote = FALSE, sep = "\t"
+)
+
+```
+
+## associate driver mutations with eCCS
+How likely are drivers to be mutated in cases from each subtype?
+
+```{r}
+
+predicted.w.score <- fread(file.path(data.dir,'/results/all.eCCS.txt') )
+
+full.mutations.classed <- full_join(full.mutations, predicted.w.score, by=c('donor'='Sample')) %>% 
+  filter( !is.na(rna_class) & !is.na(gene))
+
+full.mutations.classed <- dcast(full.mutations.classed, formula = 'donor + rna_class ~ gene', fun.aggregate=length)
+
+odds.ratio.df <- get.odds.ratio(
+  this.col = c('ARID1A'), 
+  odds.ratio = F, 
+  muts.clinic=full.mutations.classed
+)
+
+for(this.gene in names(full.mutations.classed)[-c(1:3)]){
+  
+  odds.ratio.df <- get.odds.ratio(
+    this.col = this.gene, 
+    odds.ratio = odds.ratio.df, 
+    muts.clinic=full.mutations.classed
+  )
+  
+}
+
+odds.ratio.df$sig <- NA
+odds.ratio.df$sig[odds.ratio.df$p.value < 0.05 & odds.ratio.df$lor < 0] <- 'CCS-B'
+odds.ratio.df$sig[odds.ratio.df$p.value < 0.05 & odds.ratio.df$lor > 0] <- 'CCS-A'
+
+write.table(
+  odds.ratio.df,
+  file = paste0(data.dir, "/results/driver.odds.txt"),
+  row.names = FALSE, quote = FALSE, sep = "\t"
+)
+
+order_vec <- c(na.omit(odds.ratio.df$var[order(odds.ratio.df$lor)]))
+order_vec <- order_vec[order_vec != 'NA']
+
+```
+
+
+
+## associate co-occurence with eCCS
+We use the package Rediscovery here to ensure that the significance of co-occurence is corrected for high occurence
+
+```{r}
+
+mutation.dcast <- reshape2::dcast(full.mutations, donor ~ gene, fun.aggregate=length)
+
+full.mutations.bin <- full.mutations %>% filter(!is.na(gene))
+full.mutations.bin$type <- 1
+full.mutations.bin.mat <- as.matrix(dcast(data = full.mutations.bin, formula = donor ~  gene, fun.aggregate=length))
+row.names(full.mutations.bin.mat) <- full.mutations.bin.mat[,1]
+full.mutations.bin.mat <- full.mutations.bin.mat[,-1]
+full.mutations.bin.mat[full.mutations.bin.mat > 1] <- 1
+full.mutations.bin.mat <- t(full.mutations.bin.mat)
+full.mutations.bin.mat <- apply(full.mutations.bin.mat, c(1, 2), as.numeric)
+
+mutation.prob <- getPM(full.mutations.bin.mat)
+mutex.res <- getMutex(full.mutations.bin.mat, mutation.prob)
+mutex.res <- as.matrix(mutex.res)
+
+mutex.res_qvalue <- getMutex(full.mutations.bin.mat, mutation.prob)
+mutex.res_qvalue@x <- qvalue::qvalue(mutex.res_qvalue@x)$qvalue
+
+colnames(mutex.res) = rownames(mutex.res) = row.names(full.mutations.bin.mat)
+
+## rearrange matrix for plot
+## you have to reorder the mutex matrix before zeroing the upper.tri
+mutex.res <- mutex.res[order_vec, order_vec]
+
+mutex.res[upper.tri(mutex.res, diag = TRUE)] <- NA
+
+mutex.res.df <- data.frame(mutex.res )
+mutex.res.df$gene <- order_vec
+mutex.res.melt <- reshape2::melt(mutex.res.df, id.vars='gene')
+
+mutex.res.melt$value.adj <- mutex.res.melt$value - 0.5
+mutex.res.melt$value.adj.abs <- abs(mutex.res.melt$value.adj)
+mutex.res.melt$value.adj.abs.sig <- mutex.res.melt$value.adj.abs
+mutex.res.melt$value.adj.abs.sig[mutex.res.melt$value.adj.abs < 0.45] <- NA
+
+mutex.res.melt$gene <- factor(mutex.res.melt$gene, levels = order_vec)
+mutex.res.melt$gene2 <- factor(mutex.res.melt$variable, levels = order_vec)
+
+mutex.df <- as.data.frame(as.matrix(mutex.res))
+names(mutex.df) <- row.names(full.mutations.bin.mat)
+
+mutex.df$gene <- names(mutex.df)
+mutex.melt <- reshape2::melt(mutex.df, id.vars='gene')
+
+mutex.melt.na <- mutex.melt
+mutex.melt.na$value[mutex.melt.na$value < 0.9 & mutex.melt.na$value > 0.1] <- NA
+mutex.melt.na$value[mutex.melt.na$value < 0.95 & mutex.melt.na$value > 0.05] <- NA
+mutex.melt.na$value[mutex.melt.na$value == 0] <- NA
+
+mutex.res.melt$combined <- paste(pmin(as.character(mutex.res.melt$gene), as.character(mutex.res.melt$variable)), 
+                                 pmax(as.character(mutex.res.melt$gene), as.character(mutex.res.melt$variable)), sep = ", ")
+
+sig.pairs <- mutex.res.melt %>% filter(value < 0.05 | value > 0.95 )
+strict.sig.pairs <- mutex.res.melt %>% filter(value < 0.01 | value > 0.99  )
+
+odds.ratio.df$gene <- factor(odds.ratio.df$var, levels = order_vec)
+mutex.res.melt$gene2 <- factor(mutex.res.melt$gene2, levels = order_vec)
+
+subtype.driver.LOR <- 
+  plot_grid(
+    
+    ggplot(mutex.res.melt , aes(x=gene, y=gene2) )+ 
+  
+      geom_point(aes(size=value.adj.abs,alpha=value.adj.abs, color=value.adj), shape=16) +        
+      geom_point(aes(size=value.adj.abs.sig), shape =1, stroke = 1) + 
+      scale_color_gradient2(low = "red", mid = "white", high = "blue", midpoint = 0) +
+      theme_bw(base_size=10)+  guides(color='none',size='none',alpha='none')+
+      theme( 
+  
+        legend.position = 'bottom',
+        panel.border = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_text(angle = -45,  hjust=0.01),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank() ,
+        plot.margin = unit(c(0, 0, 0, 0), "mm"),
+        axis.text.y =element_blank(),
+        panel.background = element_blank(), 
+        plot.background = element_blank() 
+      ) +
+     coord_fixed()+
+      scale_size_continuous(range = c(0.5, 3))  
+      
+     
+    ,
+    NULL,
+    
+    ggplot(odds.ratio.df, aes(x=lor, y=gene)) +
+      geom_vline(xintercept = 0, color='grey80')+
+      geom_errorbar( aes(xmin =  ci.lo, xmax = ci.hi), width=0) +
+      geom_point(aes(color=sig), size=2)+ 
+      theme_bw(base_size=10) +
+      scale_size_continuous(range = c(0.5, 3))  +
+      
+      scale_color_manual(values = pnw_palette(name="Bay", n=30)[c(3,20)], na.value = 'grey90') +
+      
+      theme(panel.grid = element_blank(), 
+            panel.border = element_blank(),
+            panel.spacing = unit(1, "lines"),
+            strip.background = element_blank(),
+            axis.ticks.y = element_blank(),
+            axis.text.y = element_text(hjust = 0.5),
+            plot.margin = unit(c(0, 0, 0, 0), "mm"),
+            axis.line.x = element_line(color = "grey80"),
+            legend.position = 'bottom',
+            panel.background = element_blank(), 
+            plot.background = element_blank() 
+
+      ) +
+      guides(color='none',size='none')+
+      labs(x='CCS-A log odds ratio',y='')+
+      scale_y_discrete(position = "left")
+  
+  , rel_widths = c(0.25,-0.01,0.2 ), ncol = 3,align = 'h', axis = "rlbt")
+
+subtype.driver.LOR
+
+ggsave(file.path(data.dir,"/results/fig/FIG4BC.subtype.driver.LOR.svg"), plot = 
+  subtype.driver.LOR
+, device = "svg", height = 75, width = 115, units='mm', dpi=72 )
+ 
+```
+## TP53 and survival
+
+```{r}
+predicted.w.score <- fread(file.path(data.dir,'/results/all.eCCS.txt')) %>%
+   dplyr::select(Sample, rna_class, confidence.polarized)
+predicted.w.score$rna_class[is.na(predicted.w.score$rna_class)] <- 'Other'
+predicted.w.score$final.cms <- factor(predicted.w.score$rna_class, levels = rev(c("CCS-A" ,'Other',"CCS-B")))
+
+all.samples <- fread(file.path(data.dir,"/results/samples.info.txt")) %>% 
+  dplyr::select(Study_ID, Sample, location, FF, Site_of_tissue, Sample_Progression, tissue_before_chemo)
+
+all.samples <- left_join(all.samples, predicted.w.score)
+
+timeline.outcome <- fread(file.path(data.dir,"/results/timeline.txt"))
+
+## adjust timeline
+timeline.outcome <- timeline.outcome %>% 
+  filter(relative_latest_date > 0)
+
+timeline.outcome$last.from.surgery = timeline.outcome$relative_latest_date - timeline.outcome$relative_Date_of_Surgery
+timeline.outcome$last.from.L1 = timeline.outcome$relative_latest_date - timeline.outcome$relative_Date_of_first_infusion_of_first_line_palliative_chemotherapy
+
+all.clinic <- fread(file.path(data.dir,"/results/clinic.info.txt")) %>% 
+  dplyr::select(Study_ID, Status, Overall_Stage_at_Diagnosis, Specify_other_cause_of_death,
+                Sex_assigned_at_birth, Age_at_first_histological_diagnosis
+                )
+
+na_values <- c("No information", "Not available", "Not Done", 
+               "Unknown", "Not stated", "Not applicable", "","N/A")
+
+all.clinic <- all.clinic %>%
+  mutate(across(Overall_Stage_at_Diagnosis, ~replace(., . %in% na_values, NA)))
+
+all.clinic$OS_STATUS <- NA
+all.clinic$OS_STATUS[all.clinic$Status == 'Alive'] <- 0
+all.clinic$OS_STATUS[all.clinic$Status == 'Expired'] <- 1
+all.clinic %>% group_by(Status, OS_STATUS) %>% tally()
+
+timeline.outcome <- full_join(timeline.outcome, all.clinic, by=c('Study_ID'='Study_ID'))  %>% 
+  filter(Specify_other_cause_of_death %ni% c('coagulopathy and MSOF post hepatectomy') )
+
+alluvial <- fread(file.path(data.dir,"/results/alluvial.txt")) %>% 
+  dplyr::select(Study_ID, Type_of_Surgery, first_palliative, first_palliative_specific, second_palliative)
+
+timeline.outcome <- full_join(timeline.outcome, alluvial, by=c('Study_ID'='Study_ID'))
+
+timeline.outcome <- left_join(all.samples, timeline.outcome, by=c('Study_ID'='Study_ID'))  %>%
+  filter( rna_class %in% c('CCS-A','CCS-B'))
+
+table(timeline.outcome$rna_class)
+
+tp53.hit <- c(na.omit(full.mutations$donor[full.mutations$gene == 'TP53']))
+
+palliative.cohort <- timeline.outcome %>% 
+  filter(  last.from.L1 > 0 & rna_class != 'Other' & Sample %ni% tp53.hit &
+             first_palliative %in% c( "Other Drug", "Chemotherapy + Immunotherapy","Chemotherapy" ) 
+             ) 
+
+palliative.cohort$OS_STATUS[palliative.cohort$last.from.L1 > 12 *5] <- 0
+palliative.cohort$last.from.L1[palliative.cohort$last.from.L1 > 12 *5] <- 12 *5
+
+os.palliative.cms <- survfit(Surv(last.from.L1, OS_STATUS) ~ rna_class , 
+                             data = palliative.cohort )
+
+os.palliative.cms
+surv_pvalue(os.palliative.cms, data = palliative.cohort)
+
+```

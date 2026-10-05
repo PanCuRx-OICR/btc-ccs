@@ -1,0 +1,2 @@
+sample	glm_labels	prob
+this_sample	gCCS-B	0.003

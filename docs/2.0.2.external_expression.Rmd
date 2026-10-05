@@ -1,0 +1,573 @@
+# Differential methylation and protein expression 
+Here, we return to our external datasets from [Dong et al. 2022](https://doi.org/10.1016/j.ccell.2021.12.006) and [Jusakul et al. 2017](https://pubmed.ncbi.nlm.nih.gov/28667006/) to explore other data modalities.
+
+## Data intake
+
+```{r}
+
+#BiocManager::install("lumi")
+
+suppressPackageStartupMessages({
+
+  library(data.table)
+  library(readxl)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  
+  library(lumi)
+  library(limma)
+  library(minfi)
+  library(IlluminaHumanMethylation450kmanifest)
+  library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+  library(rtracklayer)
+  
+  library(FactoMineR)
+  library(Rtsne)
+  library(vegan)
+  
+  library(ggplot2)
+  library(ggrepel)
+  library(PNWColors)
+  
+})
+
+packageVersion("lumi")
+packageVersion('minfi')
+packageVersion('limma')
+
+`%ni%` <- Negate(`%in%`)
+
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
+
+source( file.path(code.dir, "bin/BTC.functions.R"))
+
+classifier <- readRDS(file.path(data.dir,'/results/tps.classifier.rds'))
+
+CMSA_MARKERS = c( 'DCDC2','BICC1','ONECUT1',
+                  'PROX1','HNF1B','SPP1', 
+                  'CFTR','NCAM1')
+  
+CMSB_MARKERS = c('PTGS2','S100P', 'MKI67', 
+                  'CDK1', 'CDX2', 'CD44',
+                 'KRT7', 'KRT19', 'KRT20',
+                 'MUC2','MUC5AC','MUC17')
+
+```
+
+## Methylation variance (from Jusakul et al.)
+We take the methylation array data from Jusakul et al and identify differentially methylated genes between samples classified by eCCS (in step 1.3.1). We also add in a little analysis of IDH1+ samples and find patterns suggestive that within CCS-A, these samples might be doing their own thing (as expected from methylation of IDH1+ samples).
+
+```{r}
+
+jusakul_methylation.meta <-  fread(file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/GSE89803_RAW/jusakul_methylation.txt'))
+
+jusakul_methylation.meta$barcode <- 
+  paste(
+    jusakul_methylation.meta$V2,
+    jusakul_methylation.meta$V3,
+    jusakul_methylation.meta$V4,
+    sep='_'
+  )
+
+jusakul_methylation.meta$icgc_id <- 
+  paste(
+    jusakul_methylation.meta$V8,
+    jusakul_methylation.meta$V9,
+    jusakul_methylation.meta$V10,
+    sep='_'
+  )
+
+jusakul.predicted.w.score <-  fread(file.path(data.dir, "/results/jusakul.eCCS.txt"))
+names(jusakul.predicted.w.score)[1] <- 'icgc_id'
+
+jusakul_methylation.meta <- full_join(jusakul_methylation.meta, 
+                                      jusakul.predicted.w.score, by=c('icgc_id'='icgc_id')) %>% 
+  filter(!is.na(barcode) & !is.na(rna_class) & V6 != 'normal' ) 
+
+
+# Set the path to your .idat files
+idat_dir <- file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/GSE89803_RAW')
+
+unzip.files =F
+if(unzip.files){
+  gz_files <- list.files(idat_dir, pattern = "\\.idat\\.gz$", full.names = TRUE)
+  
+  # Unzip each file
+  for (f in gz_files) {
+    R.utils::gunzip(f, remove = TRUE)  # remove = TRUE deletes the .gz file after extraction
+  }
+  
+}
+
+
+RGSet <- read.metharray.exp(base = idat_dir, recursive = TRUE)
+RGSet <- RGSet[,jusakul_methylation.meta$barcode]
+dim(RGSet)
+
+#MSet <- preprocessRaw(RGSet)  
+
+normSet <- preprocessQuantile(RGSet)
+
+betaVals <- getBeta(normSet)
+
+betaVals.df <- cbind.data.frame( betaVals)
+
+jusakul.methyl.pca <- PCA(t(betaVals), graph = F)
+jusakul.methyl.sites <- jusakul.methyl.pca$var$coord
+jusakul.methyl.sample <- cbind.data.frame('barcode'=rownames(jusakul.methyl.pca$ind$coord),
+                                          jusakul.methyl.pca$ind$coord)
+
+jusakul.methyl.sample <- left_join(jusakul.methyl.sample, 
+                                   jusakul_methylation.meta, by=c('barcode'='barcode'))
+
+ggplot(jusakul.methyl.sample, aes(x=Dim.1, y=Dim.2, color=rna_class)) + 
+         geom_point(size=2) + theme_bw(base_size=10) +
+         
+         stat_ellipse(data = ~ subset(., !is.na(rna_class) ), linetype='dashed')+
+         scale_color_manual(values=c("#04597C", "#EDA71A"), na.value = 'grey80') + 
+         theme(    plot.margin = unit(c(0, 0, 0, 0), "mm"),
+                   panel.background = element_blank(),
+                   plot.background = element_blank(),
+                   
+                   panel.grid = element_blank()) + coord_fixed() + 
+         labs(x='Jusakul et al. Methylation PC1',y='Jusakul et al. Methylation PC2') + guides(color='none')
+
+```
+
+## tSNE
+
+```{r}
+
+tsne_result <- Rtsne(t(betaVals), dims = 2, perplexity = 30, verbose = TRUE, max_iter = 500)
+tsne.dims <- as.data.frame(tsne_result$Y)
+names(tsne.dims) <- c('tsne.dim.1','tsne.dim.2')
+tsne.dims$barcode <- colnames(betaVals)
+
+tsne.dims <- left_join(tsne.dims, jusakul.methyl.sample, by=c('barcode'='barcode'))
+
+jusakul_muts <- fread(file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/data_mutations.txt'))
+jusakul_drivers <- jusakul_muts %>% filter(Hugo_Symbol %in% c('BAP1','TP53','FGFR2','IDH1','SMAD4')) %>%
+  dplyr::select(Tumor_Sample_Barcode, Hugo_Symbol, Consequence)
+
+tsne.dims$IDH1 <- 'wt'
+tsne.dims$IDH1[tsne.dims$icgc_id %in% jusakul_drivers$Tumor_Sample_Barcode[jusakul_drivers$Hugo_Symbol == 'IDH1']] <- 'IDH1+'
+
+ggplot(tsne.dims, aes(x=tsne.dim.1, y=tsne.dim.2, color=rna_class)) + 
+         geom_point(size=2, aes(shape=IDH1)) + theme_bw() +
+         scale_shape_manual(values = c('wt'=1,'IDH1+'=16)) +
+         
+         scale_color_manual(values=c("#04597C", "#EDA71A"), na.value = 'grey80') + theme(panel.grid = element_blank())
+
+```
+
+## explain variance
+
+```{r}
+
+jusakul_sample <- fread(file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/data_clinical_sample.txt'), skip=4)
+jusakul_patient <- fread(file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/data_clinical_patient.txt'), skip=4)
+
+jusakul_patient <- full_join(jusakul_patient, jusakul_sample, by=c('PATIENT_ID'='PATIENT_ID'))
+jusakul_patient <- jusakul_patient %>% filter(ANATOMICAL_SUBTYPE != 'N/A' & SAMPLE_ID %in% tsne.dims$icgc_id[!is.na(tsne.dims$rna_class)] )
+table(jusakul_patient$ANATOMICAL_SUBTYPE)
+
+jusakul_methylation.pat <- left_join(jusakul_patient, jusakul_methylation.meta, by=c('SAMPLE_ID'='icgc_id'))
+
+
+#TODO: subset to patients with all info (CCS, location and methylation)
+
+locations <- jusakul_methylation.pat$ANATOMICAL_SUBTYPE
+names(locations) <- jusakul_methylation.pat$SAMPLE_ID
+
+rna_class <- jusakul_methylation.pat$rna_class
+names(rna_class) <- jusakul_methylation.pat$SAMPLE_ID
+
+betas.t <- t(betaVals)
+betas.t.filt <- betas.t[jusakul_methylation.pat$barcode,]
+
+betas_rda <- rda(betas.t.filt, scale = TRUE)
+
+eig.val <- jusakul.methyl.pca$eig
+
+# Test fit on top 2 axes
+r.tab = NULL
+for(i in c(1:5)){
+
+  fit2_f1 <- envfit(betas_rda, locations, permutations = 999, choices = i:i)
+  fit2_f2 <- envfit(betas_rda, rna_class, permutations = 999, choices = i:i)
+
+  this.r.tab <- rbind.data.frame ( cbind('i'=as.numeric(i),
+               'f'='anatomy',
+               'e'=as.numeric(eig.val[i,2]),
+               'r'=unlist(fit2_f1$factors$r),
+               'p'=unlist(fit2_f1$factors$pvals)
+  ),
+  cbind('i'=as.numeric(i),
+        'f'='CCS',
+        'e'=as.numeric(eig.val[i,2]),
+        'r'=unlist(fit2_f2$factors$r),
+        'p'=unlist(fit2_f2$factors$pvals)
+  )
+  )
+  
+  if(is.null(r.tab)){
+    r.tab <- this.r.tab
+  } else{
+    r.tab <- rbind.data.frame(r.tab,this.r.tab)
+  }
+  
+}
+
+r.tab$p <- as.numeric(r.tab$p)
+r.tab$r <- as.numeric(r.tab$r)
+r.tab$e <- as.numeric(r.tab$e)
+
+r.tab$p.sig <- NA
+r.tab$p.sig[r.tab$p < 0.05] <- r.tab$p[r.tab$p < 0.05]
+
+r.tab$pc.i <- paste0('PC',r.tab$i)
+r.tab$pc.i <- factor(r.tab$pc.i, levels=rev(paste0('PC',c(1:5)) ))
+r.tab
+
+
+methyl.rda.stack.plot <- 
+ggplot(r.tab %>% filter(p < 0.05), aes(y=f , x=r*e)) + 
+
+  geom_bar(aes(fill=pc.i), stat='identity')+
+    geom_text(
+    aes(label = pc.i), color='white',
+    position = position_stack(vjust = 0.5), size=2,
+  ) +
+  theme_bw(base_size=10)+
+  theme(
+    plot.margin = unit(c(0, 2, 0, 2), "mm"),
+    panel.background = element_blank(),
+    #panel.border = element_blank(),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = 'bottom',
+    
+  ) + labs(x='Variance explained (%)')+
+
+    scale_fill_manual(  values=c(
+      'PC1'='black',
+      'PC2'='grey20',
+      'PC3'='grey40',
+      'PC4'='grey60',
+      'PC5'='grey80'
+    
+  ), na.value = 'cornflowerblue') +
+  expand_limits(x = max(r.tab$r * r.tab$e, na.rm = TRUE) * 1.1) + 
+  guides(fill='none')
+
+methyl.rda.stack.plot
+
+ggsave(file.path(data.dir,"/results/fig/FIG3B.methyl_rda.stack.svg"),plot =
+  methyl.rda.stack.plot       
+, device = "svg", height = 18, width = 50 , units='mm')
+
+```
+
+### compare to Jusakul classes
+
+```{r}
+
+library(readxl)
+library(ggalluvial)
+
+jusakul.S3A <- read_excel(file.path(data.dir,
+                                    '/source_data/cbioportal/chol_icgc_2017/21598290cd170368-sup-181437_2_supp_4118307_1ryl1l.xlsx'), 
+                          sheet = 1, skip = 1)
+
+jusakul.mVAF <- jusakul.S3A %>% group_by(Tumor) %>% 
+  summarise(mean_vaf = mean(`Variant frequency`))
+
+content.cutoff <- median(jusakul.mVAF$mean_vaf, na.rm=T)
+
+jusakul.mVAF$content.bin <- NA
+jusakul.mVAF$content.bin[jusakul.mVAF$mean_vaf >= content.cutoff] <- '>0.2'
+jusakul.mVAF$content.bin[jusakul.mVAF$mean_vaf < content.cutoff] <- '<0.2'
+
+ggplot(jusakul.mVAF, aes(x=mean_vaf, fill=content.bin)) + 
+  geom_histogram(position=position_dodge()) + theme_bw() + 
+  geom_vline(xintercept = content.cutoff)+
+   scale_fill_manual(  
+     values =  pnw_palette(name="Sailboat", n=4 )
+     , na.value = 'white') 
+
+jusakul.S1A <- read_excel(file.path(data.dir,
+                                    '/source_data/cbioportal/chol_icgc_2017/21598290cd170368-sup-181437_2_supp_4118310_krylkl.xlsx'), 
+                          sheet = 1, skip = 1)
+
+jusakul.S1A[jusakul.S1A == 'N/A'] <- NA
+
+jusakul.S1A <- full_join(jusakul.S1A, tsne.dims, by=c('Sample ID'='icgc_id')) %>% 
+  full_join(jusakul.mVAF, by=c('Sample ID'='Tumor'))
+
+transition_df.1 <- jusakul.S1A %>% 
+  filter(!is.na(`Expanded cluster`) & !is.na(rna_class)  ) %>% 
+  group_by(`Expanded cluster`, rna_class) %>% tally()
+
+colnames(transition_df.1) <- c("Jusakul", "CCS","Freq")
+
+transition.max <- transition_df.1 %>% group_by(Jusakul) %>% 
+  filter(Freq == max(Freq) ) 
+
+transition_df.1$Jusakul.f <- factor(transition_df.1$Jusakul, 
+                                  levels=transition.max$Jusakul[order(transition.max$CCS)])
+
+
+ggplot(transition_df.1,
+          aes(axis1 = CCS, axis2 = Jusakul.f, y = Freq)) +
+   geom_alluvium(width=0.8,  aes(fill=Jusakul.f)) +
+   geom_stratum(width=0.8, color = "black", aes(fill=Jusakul.f), alpha=0.2) +
+   geom_text(stat = "stratum", aes(label = after_stat(stratum)), size=3) +
+   scale_x_discrete(limits = c("CCS", "Jusakul"), expand = c(.05, .05)) +
+   scale_fill_manual(  
+     values =  pnw_palette(name="Shuksan", n=4 )
+     , na.value = 'white') +
+   theme_bw(base_size=10) + 
+   guides(fill='none')+
+   labs(fill='STIM', y='Sample Count')+
+   theme(
+     plot.margin = unit(c(0, 0, 0, 0.5), "mm"),
+     panel.spacing = unit(0, "mm"),
+     panel.background = element_blank(),
+     panel.border = element_blank(),
+     plot.background = element_blank(),
+     panel.grid.major = element_blank(),
+     panel.grid.minor = element_blank(),
+     strip.background = element_blank(),
+   )
+
+```
+
+## Differential Methylation
+
+```{r}
+
+pheno <- jusakul_methylation.meta %>% filter(!is.na(barcode) ) %>% 
+  dplyr::select(barcode, icgc_id, V6, rna_class, confidence.polarized) %>% DataFrame()
+
+rownames(pheno) <- pheno[,1]
+
+pData(normSet) <- pheno
+
+normSet_filtered <- normSet[ , !is.na(pData(normSet)$rna_class) ]
+
+betaVals <- getBeta(normSet_filtered)
+
+group <- factor(pData(normSet_filtered)$rna_class)  
+design <- model.matrix(~ group)
+
+fit <- lmFit(betaVals, design)
+fit <- eBayes(fit)
+
+topTable <- topTable(fit, coef = 2, number = Inf, adjust = "BH")
+topTable$IlmnID <- rownames(topTable)
+
+Gene_features <- fread(file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/GSE89803_RAW/GPL16304_Gene_features_PlatformTable.txt'))
+
+topTable.ft <- full_join(topTable, Gene_features, by=c('IlmnID'='IlmnID'))
+
+top.gene.mthyl <- topTable.ft %>% 
+  filter(IlluminaGene != '') %>% 
+  group_by(IlluminaGene) %>%
+  slice_max(order_by = abs(logFC), n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+multiple.testing <- nrow(top.gene.mthyl)
+
+top.gene.mthyl$eccs <- NA
+top.gene.mthyl$eccs[top.gene.mthyl$IlluminaGene %in% classifier$TSPs[,1]] <- 'CCS-A'
+top.gene.mthyl$eccs[top.gene.mthyl$IlluminaGene %in% classifier$TSPs[,2]] <- 'CCS-B'
+
+jusakul.diffmethyl.plot <- 
+ggplot(top.gene.mthyl , aes(x=logFC, y=-log(adj.P.Val ))) + 
+  geom_hline(yintercept = -log(0.05 ), color='grey',linetype='dotted')+
+  
+     geom_point( data = ~ subset(., adj.P.Val >= (0.05 ) & IlluminaGene %in% sample(top.gene.mthyl$IlluminaGene, round(nrow(top.gene.mthyl) * 0.1), replace = F )),  color='grey50') + 
+
+     geom_point( data = ~ subset(.,  adj.P.Val < (0.05 ) & logFC > 0 & IlluminaGene %in% sample(top.gene.mthyl$IlluminaGene, round(nrow(top.gene.mthyl) * 0.75), replace = F )),   
+                 color=pnw_palette(name="Bay", n=19 )[c(1)]) + 
+     geom_point( data = ~ subset(.,  adj.P.Val < (0.05 ) & logFC < 0 & IlluminaGene %in% sample(top.gene.mthyl$IlluminaGene, round(nrow(top.gene.mthyl) * 0.75), replace = F )),   
+                 color=pnw_palette(name="Bay", n=19 )[c(10)]) + 
+         
+  geom_label_repel(  data = ~ subset(., IlluminaGene %in% c(CMSA_MARKERS,
+                                                         CMSB_MARKERS) & adj.P.Val < 0.05 ), 
+                     aes(label=IlluminaGene, fill=eccs, color=eccs), 
+                     size = 1.8,   force = 0.5, label.padding = 0.1,
+                     max.time = 4,  min.segment.length = 0, max.overlaps =15) +
+  
+  geom_point( data = ~ subset(., IlluminaGene %in% CMSA_MARKERS & adj.P.Val < 0.05 ),   
+              color='black', fill=pnw_palette(name="Bay", n=19 )[c(1)], shape=21) + 
+  geom_point( data = ~ subset(., IlluminaGene %in% CMSB_MARKERS & adj.P.Val < 0.05 ),   
+              color='black', fill=pnw_palette(name="Bay", n=19 )[c(10)], shape=21) + 
+  scale_fill_manual(values=c("CCS-A"="#04597C", "CCS-B"="#EDA71A"), na.value = 'white') +
+  scale_color_manual(values=c("CCS-A"="white", "CCS-B"="white"), na.value = 'black') +
+  labs(x='Differential methylation',y='adj. p-value (-log)')+
+  guides(color='none',fill='none')+
+  theme_bw(base_size=10) +
+  theme(plot.background = element_blank(), 
+        panel.background = element_blank(), 
+        plot.margin = unit(c(0, 0, 0, 0), "mm"),
+        panel.grid =  element_blank()) + 
+  xlim(-max(abs(top.gene.mthyl$logFC)),max(abs(top.gene.mthyl$logFC)))
+
+jusakul.diffmethyl.plot
+
+overwrite.plot = T
+if(overwrite.plot){
+  ggsave(file.path(data.dir, "/results/fig/FIG3D.jusakul.diffmethyl.svg"),plot =
+    jusakul.diffmethyl.plot
+  , device = "svg",width = 65, height = 45, units = 'mm' )
+}
+
+
+top.gene.mthyl.select <- 
+  topTable.ft %>%
+  dplyr::select(IlmnID, IlluminaGene, 
+                AveExpr,  logFC, B,  P.Value  , adj.P.Val     )
+
+anno <- getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+anno_df <- as.data.frame(anno)
+
+#hgdownload.soe.ucsc.edu/goldenPath/hg19/liftOver/hg19ToHg38.over.chain.gz
+#chain <- import.chain("~/Downloads/hg19ToHg38.over.chain")  
+gr_hg19 <- GRanges(seqnames = anno_df$chr, ranges = IRanges(anno_df$pos, width = 1), IlmnID = anno_df$Name)
+
+gr_hg38 <- liftOver(gr_hg19, chain)
+
+gr_hg38_df <- as.data.frame(gr_hg38) %>%
+  dplyr::select(IlmnID, seqnames, start) %>%
+  left_join(top.gene.mthyl.select) %>%
+  filter(!is.na(IlluminaGene)) %>%
+  arrange(seqnames, start)
+  
+write.table( gr_hg38_df,  
+             file = file.path(data.dir,'/results/ccs.methyl_diff.txt'), 
+             row.names = F,col.names = T, quote = FALSE, sep = "\t", append =F)
+
+
+```
+
+## Protein expression from Dong et al (2022)
+
+```{r}
+
+dong.predicted.w.score <-  fread( file.path(data.dir, "/results/dong.eCCS.txt"), )
+rownames(dong.predicted.w.score) <- dong.predicted.w.score[[1]]
+dong.predicted.w.score[[1]] <- NULL
+dong.predicted.w.score <- dong.predicted.w.score %>% filter(!is.na(rna_class))
+
+dong.prot.info <- read_excel(file.path(data.dir,"/source_data/dong_2022_S1.xlsx"), sheet = 5, skip = 2)
+names(dong.prot.info)[c(1:2)] <- c('genes','protein')
+names(dong.prot.info)[-c(1:2)] <- paste0('DONG_',names(dong.prot.info[,-c(1:2)]))
+dong.prot.info[dong.prot.info == 'NA'] <- NA
+
+dong.prot.mat <- as.matrix(dong.prot.info[,-c(1:2)])
+dong.prot.mat <- matrix(as.numeric(dong.prot.mat), nrow = nrow(dong.prot.mat), ncol = ncol(dong.prot.mat))
+
+dong.prot.pca <- PCA(t(dong.prot.mat), graph = F)
+dong.prot.sample <- data.frame(dong.prot.pca$ind$coord)
+dong.prot.sample$PatientID <- names(dong.prot.info[,-c(1:2)])
+
+dong.prot.sample <- left_join(dong.prot.sample, dong.predicted.w.score, by=c('PatientID'='PatientID'))
+
+ggplot(dong.prot.sample ,aes(x=Dim.1, y=Dim.2, color=rna_class)) + 
+  geom_point( size=2) + 
+  theme_bw(base_size=10) +
+  stat_ellipse(data = ~ subset(., !is.na(rna_class) ), linetype='dashed')+
+  scale_color_manual(values=c("#04597C", "#EDA71A"), na.value = 'grey80') + 
+  theme(    plot.margin = unit(c(0, 0, 0, 0), "mm"),
+            panel.background = element_blank(),
+            plot.background = element_blank(),
+            panel.grid = element_blank()) + 
+  guides(color='none') + coord_fixed() + labs(x='Dong et al. Protein PC1', y='Dong et al. Protein PC2')
+
+cms.prot.dong.ids <- unique(intersect(names(dong.prot.info), dong.predicted.w.score$PatientID))
+
+normalized_data.p <- dong.prot.info %>% dplyr::select(all_of(cms.prot.dong.ids))
+
+dong.predicted.filt.p <- dong.predicted.w.score %>% 
+  filter(PatientID %in% cms.prot.dong.ids) %>%
+  arrange(match(PatientID, cms.prot.dong.ids))
+
+group <- factor(gsub('-','',dong.predicted.filt.p$rna_class))
+design <- model.matrix(~ 0 + group)
+colnames(design) <- levels(group)
+
+normalized_data.complete <- as.matrix(normalized_data.p)
+normalized_data.complete <- apply(normalized_data.complete, 2, as.numeric)
+rownames(normalized_data.complete) <- dong.prot.info$genes
+
+fit <- lmFit(normalized_data.complete, design)
+ncol(normalized_data.complete)
+nrow(design)
+
+contrast.matrix <- makeContrasts(
+  TreatmentVsControl = CCSA - CCSB,  
+  levels = design
+)
+
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+results <- topTable(fit2, coef = 1, number = Inf, adjust.method = "BH")
+
+results$gene_name <- results$ID
+multiple.testing <- nrow(results) 
+
+results$eccs <- NA
+results$eccs[results$gene_name %in% classifier$TSPs[,1]] <- 'CCS-A'
+results$eccs[results$gene_name %in% classifier$TSPs[,2]] <- 'CCS-B'
+
+dong.diffprot.plot <- 
+     ggplot(results , aes(x=logFC, y=-log(adj.P.Val ))) + 
+         geom_hline(yintercept = -log(0.05 ), color='grey',linetype='dotted')+
+         
+     geom_point( data = ~ subset(., adj.P.Val >= (0.05 ) & gene_name %in% sample(results$gene_name, round(nrow(results) * 0.1), replace = F )),  color='grey50') + 
+
+     geom_point( data = ~ subset(.,  adj.P.Val < (0.05 ) & logFC > 0 & gene_name %in% sample(results$gene_name, round(nrow(results) * 0.75), replace = F )),   
+                 color=pnw_palette(name="Bay", n=19 )[c(1)]) + 
+     geom_point( data = ~ subset(.,  adj.P.Val < (0.05 ) & logFC < 0 & gene_name %in% sample(results$gene_name, round(nrow(results) * 0.75), replace = F )),   
+                 color=pnw_palette(name="Bay", n=19 )[c(10)]) + 
+         
+         
+         geom_label_repel(  data = ~ subset(., gene_name %in% c(CMSA_MARKERS,
+                                                                CMSB_MARKERS) & adj.P.Val < 0.05 ), 
+                            aes(label=gene_name, fill=eccs, color=eccs), 
+                            size = 1.8,   force = 0.5, label.padding = 0.1,
+                            max.time = 4,  min.segment.length = 0, max.overlaps =15) +
+         
+         geom_point( data = ~ subset(., gene_name %in% CMSA_MARKERS & adj.P.Val < 0.05 ),   
+                     color='black', fill=pnw_palette(name="Bay", n=19 )[c(1)], shape=21) + 
+         geom_point( data = ~ subset(., gene_name %in% CMSB_MARKERS & adj.P.Val < 0.05 ),   
+                     color='black', fill=pnw_palette(name="Bay", n=19 )[c(10)], shape=21) + 
+           scale_fill_manual(values=c("CCS-A"="#04597C", "CCS-B"="#EDA71A"), na.value = 'white') +
+           scale_color_manual(values=c("CCS-A"="white", "CCS-B"="white"), na.value = 'black') +
+         guides(color='none')+
+         labs(x='Differential protein expression',y='adj. p-value (-log)')+
+         guides(color='none',fill='none')+
+         theme_bw(base_size=10) +
+         theme(plot.background = element_blank(), 
+               panel.background = element_blank(), 
+               plot.margin = unit(c(0, 0, 0, 0), "mm"),
+               
+               panel.grid =  element_blank()) + 
+  xlim(-max(abs(results$logFC)),max(abs(results$logFC)))
+
+dong.diffprot.plot
+
+ggsave(file.path(data.dir, "/results/fig/FIG3e.dong.diffprot.svg"),plot =
+         dong.diffprot.plot
+   , device = "svg",width = 65, height = 45, units = 'mm' )
+
+
+```
+
+

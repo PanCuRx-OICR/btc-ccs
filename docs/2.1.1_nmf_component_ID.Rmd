@@ -1,0 +1,762 @@
+# Biological Interpretation of NMF components
+
+This is the fun part. We've optimized these highly abstracted gene sets, now we figure out what the heck we've isolated. This is another spot where our tumour-informed optimization outperforms the biologically informed approach: we have made very few assumptions about cell-types to get here, so our biological interpretation should not be (as) biased.
+
+## Data intake
+Start by normalizing the W and H matrices for interpretation
+```{r}
+suppressWarnings(
+suppressPackageStartupMessages({
+
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(tibble)
+  library(reshape2)
+  library(pvclust)
+  library(msigdbr)
+  library(gprofiler2)
+  library(org.Hs.eg.db)
+  library(clusterProfiler)
+  library(enrichplot)
+  library(cowplot)
+  library(ggplot2)
+  library(PNWColors)
+  
+})
+)
+
+packageVersion('clusterProfiler')
+
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
+source( file.path(data.dir, "paths.R"))
+cluster.dir = file.path(cluster.dir, 'nmf_analysis')
+
+source( file.path(code.dir, "bin/BTC.functions.R"))
+source( file.path(code.dir, "bin/nmf.functions.R"))
+
+base_font_size = 10
+x_top_angle = 50
+
+gene_set <- fread(file.path(data.dir,'/source_data/fgs.txt'))
+gene_set$kb <- gene_set$Length / 1000
+
+gene_vec <- gene_set$ensid
+names(gene_vec) <- gene_set$gene_name
+gene_kb <- gene_set$kb
+names(gene_kb) <- gene_set$ensid
+
+cohorts <- c('whole','naive','icca','primary')
+this.cohort = cohorts[1]
+
+nmf.stats <- fread(file.path(data.dir,'results',paste0(this.cohort,'.nmf.stats.txt'))) 
+
+nmf.stats <- nmf.stats %>% 
+  filter(top == 1) 
+
+component_n = unique(nmf.stats$k)
+gene_n = unique(nmf.stats$genes)
+
+nmf.stats %>% 
+  filter(k == component_n & genes == gene_n & cor > 0.2) %>% 
+  dplyr::select(genes, sig.id, cor, cor.p) %>%
+  arrange(cor.p)
+  
+over.write.matrices = T
+if(over.write.matrices){
+    save.nmf.matrices(component_n, gene_n, 
+                      cluster.dir = file.path(cluster.dir, this.cohort), data.dir=data.dir, 
+                      cohort=this.cohort)
+}
+  
+## pull from results/
+W_matrix <- read.csv(file.path(data.dir,'results',paste0(this.cohort,'.W_matrix.txt')), row.names= 1)
+H_matrix <- read.csv(file.path(data.dir,'results',paste0(this.cohort,'.H_matrix.txt')), row.names = 1)
+
+rownames(W_matrix) <- gene_vec[rownames(W_matrix)]
+tpm_data <- reformat_w_matrix(W_matrix, gene_kb)
+
+H_matrix_ordered_norm.melt <- reformat_h_matrix(H_matrix)
+
+```
+
+## Correlations between components
+How often do our signatures show up together (or tend to be exclusive)? Since the "names" of the signatures until now are arbitrary, we rename the signatures here such that correlated signatures are closer numerically. That's how we end up with the two CCS-B signatures close numerically, and this also results in a numerical distance between CCS-A and CCS-B signatures. 
+
+```{r}
+
+# Compute pairwise correlations between rows
+H_matrix_ordered_norm <-   data.frame(t(apply(H_matrix, 1, scale)))
+names(H_matrix_ordered_norm) <- names(H_matrix)
+cor_matrix <- cor(t(H_matrix_ordered_norm) )
+
+pvclust.result <- pvclust(t(cor_matrix), method.hclust = 'complete' ) 
+order_vec <- rev(pvclust.result$hclust$labels[pvclust.result$hclust$order])
+y_order <- rev(paste0('sig',rev(pvclust.result$hclust$labels[pvclust.result$hclust$order])))
+
+y_order.convert <- cbind.data.frame('og'=y_order, 'new'=paste0('sig.',c(length(y_order):1)))
+y_order.convert$new <- factor(y_order.convert$new, levels = paste0('sig.',c(length(y_order):1)))
+
+if(over.write.matrices){
+  write.table( y_order.convert,  
+               file = file.path(data.dir,'results',paste0(this.cohort,'.NMF.conversion.txt')), 
+               row.names = F,col.names = T, quote = FALSE, sep = "\t", append =F)
+}
+
+full_correlation_matrix(H_matrix_ordered_norm, order_vec, component_n)
+y_order.convert
+
+```
+
+## CCS markers from TSP
+So far we've used well defined signals (known signatures) to identify our components. Next, we use the genes from the TSP defining our CCS.
+
+```{r}
+
+cms.gsea.full <- get_ccs_enrichment(W_matrix, data.dir, component_n, y_order.convert)
+
+label.df <- cms.gsea.full |>
+  distinct(new, Description)
+
+cms.plot <- 
+ggplot(cms.gsea.full, aes(x = Description, y = new)) +
+
+  geom_tile(aes(fill = NES), color = "white") +
+
+  geom_point(
+    data = label.df, 
+    aes(x = -0.25, y = new, color = new),
+    stroke = 4, shape = 21,   size = 0
+  ) +
+
+  geom_text(
+    data = label.df,
+    aes(x = -0.25, y = new, label = gsub('sig.','',new)),
+    size = 3, color='white'
+  ) +
+
+  coord_cartesian(xlim = c(-0.25, 2.5), clip = "off") +
+  theme_bw(base_size = base_font_size)+ 
+
+  theme(
+    axis.text.x = element_text(angle = x_top_angle, hjust = 0),
+    panel.grid = element_blank(),
+    axis.title.x = element_blank(), 
+    axis.ticks = element_blank(),
+    panel.spacing = unit(0, "lines"), 
+    plot.background = element_blank(), 
+    panel.background = element_blank(), 
+    panel.border = element_blank(),
+    strip.background = element_blank(),     
+    strip.text = element_text(color = "black"),
+    legend.position = 'bottom',
+    legend.background = element_blank(),
+    legend.text = element_text(size = 6), 
+    legend.key.size = unit(0.5, "lines"),     
+    legend.title = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+  )+ guides(color='none')+
+  scale_color_manual(values = pnw_palette(name="Sailboat", n=component_n ))+
+  scale_x_discrete(position = "top", na.translate = FALSE)+
+  scale_fill_gradientn(
+    colours = c("lightblue", "white", "darkred"),
+    values = scales::rescale(c(0, 1.5, 2))
+  ) + labs(y='NMF signatures, by co-occurence')
+
+cms.plot
+
+
+cms.gsea.full %>% dplyr::select(new, Description, NES, p.adjust) %>% arrange(Description, desc(new))
+
+```
+
+## external duct sets
+Let's augment our interpretation using biliary tract cell lineage markers identified by previous single-cell RNAseq studies of healthy tissue. We are going to use the data from [Sampaziotis et al 2021](https://pubmed.ncbi.nlm.nih.gov/33602855/), [Rimland et al 2021](onlinelibrary.wiley.com/doi/10.1002/hep.31252/suppinfo), and [Andrews et al 2024](https://doi.org/10.1016/j.jhep.2023.12.023).
+
+
+```{r}
+
+duct.gene.set <- assemble_duct_markers(data.dir, gene_set)
+
+chol.gsea.full <- test_duct_set(W_matrix, duct.gene.set, component_n)
+
+chol.gsea.trim <- left_join(data.frame('sig.id'=paste0('sig',c(1:component_n))), 
+                            chol.gsea.full, by=c('sig.id'='sig.id')) %>%
+   left_join(y_order.convert, by=c('sig.id'='og'))
+
+## curate
+chol.gsea.trim$cell <- NA
+chol.gsea.trim$cell[chol.gsea.trim$Description == 'P-Hepato2'] <- 'Hepatocyte'
+chol.gsea.trim$cell[chol.gsea.trim$Description == 'sampaziotis.IHD'] <- 'Intrahepatic Duct'
+chol.gsea.trim$cell[chol.gsea.trim$Description == 'sampaziotis.CBD'] <- 'Common Bile Duct'
+chol.gsea.hits <- chol.gsea.trim[!is.na(chol.gsea.trim$cell),]
+
+chol.gsea.hits <- sort_celltypes(chol.gsea.hits)
+
+scrna.match.plot <- 
+ggplot(chol.gsea.hits, aes(x=cell.f, y=new)) + 
+
+  geom_tile(aes(fill=log(NES)), color = "white") +   
+
+  theme_bw(base_size = base_font_size)+ 
+
+  theme(axis.text.x = element_text(angle = x_top_angle, hjust = 0),
+        panel.grid = element_blank(),
+        axis.title = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.text.y = element_blank(), 
+        panel.spacing = unit(0, "lines"), 
+        plot.background = element_blank(),
+        panel.background = element_blank(), 
+        panel.border = element_blank(),
+        strip.background = element_blank(),     
+        strip.text = element_text(color = "black"),
+        legend.position = 'bottom',
+        legend.background = element_blank(),
+        legend.text = element_text(size = 6), 
+        legend.key.size = unit(0.5, "lines"),     
+        legend.title = element_blank()) +
+  
+  guides(color = guide_legend(nrow = 3))+
+  scale_x_discrete(position = "top", na.translate = FALSE)+
+    scale_fill_gradient2(
+      low = "lightblue",
+      mid = "white",
+      high = "darkred",
+      midpoint = log(1.5), na.value = "darkblue"
+    ) 
+  
+scrna.match.plot
+unique_sc_celltypes <- length(unique(chol.gsea.hits$cell.f))
+chol.gsea.hits %>% dplyr::select(new, cell.f, NES, p.adjust) %>% arrange(desc(new))
+
+```
+
+## Human Protein Archive
+How do our markers compare to protein expression by tissue from the [Human Protein Atlas](https://www.proteinatlas.org/)?
+
+```{r}
+
+
+hpa.trim <- pull_tissue_match(nmf.stats, component_n)
+
+hpa.trim <- left_join(hpa.trim, y_order.convert, by=c('sig.id'='og'))
+
+## curate
+hpa.trim$cell <- NA
+hpa.trim$cell[hpa.trim$celltype == 'hepatocytes'] <- 'Hepatocytes'
+hpa.trim$cell[hpa.trim$celltype == 'goblet cells'] <- 'Goblet cells'
+hpa.trim$cell[hpa.trim$celltype == 'enterocytes '] <- 'Enterocytes'
+hpa.trim$cell[hpa.trim$celltype %in% c('proximal tubules','proximal tubules (microvilli)')] <- 'Kidney tubules'
+hpa.trim$cell[hpa.trim$celltype %in% c('extracellular matrix')] <- 'ECM'
+
+hpa.hits <- sort_celltypes(hpa.trim)
+
+hpa.grid <- expand.grid(x = levels(hpa.hits$cell.f), y = levels(hpa.hits$new))
+
+hpa.match.plot <- 
+ggplot(hpa.hits, aes(x=cell.f, y=new)) + 
+
+  geom_tile(data = hpa.grid, aes(x = x, y = y), fill = "white", color = "white") +
+  geom_tile(aes(fill=-log(as.numeric(p))), color = "white") +   
+
+  theme_bw(base_size = base_font_size)+ 
+  guides(size='none',shape='none')+
+
+  theme(axis.text.x = element_text(angle = x_top_angle, hjust = 0),
+       # plot.margin = unit(c(0, 10, 0, 1), "mm"),
+        panel.grid = element_blank(),
+        axis.title = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.text.y = element_blank(), 
+        panel.spacing = unit(0, "lines"), 
+        plot.background = element_blank(), 
+        panel.background = element_blank(), 
+        panel.border = element_blank(),
+        strip.background = element_blank(),     
+        strip.text = element_text(color = "black"),
+        legend.position = 'bottom',
+        legend.background = element_blank(),
+        legend.text = element_text(size = 6), 
+        legend.key.size = unit(0.5, "lines"),     
+        legend.title = element_blank()) + 
+  guides(color = guide_legend(nrow = 3))+
+
+  scale_x_discrete(position = "top", na.translate = FALSE)+
+    scale_fill_gradient2(
+      low = "lightblue",
+      mid = "white",
+      high = "darkred",
+      na.value = "lightblue"
+    )  + coord_cartesian(clip = "off")
+  
+hpa.match.plot
+
+unique_hpa_celltypes <- length(na.omit(unique(hpa.hits$cell.f)))
+hpa.hits %>% dplyr::select(new, tissuetype, cell.f, p) %>% arrange(desc(new))
+
+
+```
+
+
+## Immune cell decomposition
+How do our components compare to decomposition designed specifically to isolate immune cell signature (from CIBERSORT)?
+
+```{r}
+
+
+immune.trim <- get_cibersort_correlation( file.path(data.dir,"/results/LBR.cibersort.txt"),
+                                          H_matrix_ordered_norm.melt, component_n)
+
+immune.trim <- left_join(immune.trim, y_order.convert, by=c('sig.id'='og'))
+
+immune.trim$cell <- immune.trim$cell.type
+immune.trim <- sort_celltypes(immune.trim)
+
+immune.grid <- expand.grid(x = levels(immune.trim$cell.f), y = levels(immune.trim$new))
+
+nmf.cibsersort.plot <- 
+ggplot(immune.trim, aes(x=cell.type, y=new)) + 
+
+  geom_tile(data = immune.grid, aes(x = x, y = y), fill = "white", color = "grey") +
+  geom_tile(aes(fill=cor), color = "grey") +   
+
+  theme_bw(base_size = base_font_size)+ 
+  guides(size='none',shape='none')+
+
+  theme(axis.text.x = element_text(angle = x_top_angle, hjust = 0),
+        panel.grid = element_blank(),
+        axis.title = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.text.y = element_blank(), 
+        panel.spacing = unit(0, "lines"), 
+        plot.background = element_blank(), 
+        panel.border = element_blank(),
+        strip.background = element_blank(),     
+        strip.text = element_text(color = "black"),
+        legend.position = 'bottom',
+        legend.background = element_blank(),
+        legend.text = element_text(size = 6), 
+        legend.key.size = unit(0.5, "lines"),     
+        legend.title = element_blank()) + 
+  guides(color = guide_legend(nrow = 3))+
+
+  scale_x_discrete(position = "top", na.translate = FALSE)+
+    scale_fill_gradient2(
+      low = "lightblue",
+      mid = "white",
+      high = "darkred",
+      midpoint = 0.2,
+      
+      na.value = "darkblue"
+    ) 
+
+nmf.cibsersort.plot
+
+ggsave(file.path(data.dir, "results/fig",paste0(this.cohort,".nmf.cibsersort.svg")),plot =
+  nmf.cibsersort.plot
+, device = "svg", height = 65, width = 75, units = 'mm',dpi=72 )
+
+## curate
+immune.trim$cell <- NA
+immune.trim$cell[immune.trim$cell.type == 'B cell naive'] <- 'Naive B cells'
+immune.trim$cell[immune.trim$cell.type == 'NK cell activated'] <- 'Activated NK cells'
+
+immune.trim <- sort_celltypes(immune.trim)
+
+immune.grid <- expand.grid(x = levels(immune.trim$cell.f), y = levels(immune.trim$new))
+
+immune.plot <- 
+ggplot(immune.trim, aes(x=cell.f, y=new)) + 
+
+  geom_tile(data = immune.grid, aes(x = x, y = y), fill = "white", color = "grey") +
+  geom_tile(aes(fill=cor), color = "white") +   
+
+  theme_bw(base_size = base_font_size)+ 
+  guides(size='none',shape='none')+
+
+  theme(axis.text.x = element_text(angle = x_top_angle, hjust = 0),
+        panel.grid = element_blank(),
+        axis.title = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.text.y = element_blank(), 
+        panel.spacing = unit(0, "lines"), 
+        plot.background = element_blank(), 
+        panel.border = element_blank(),
+        strip.background = element_blank(),     
+        strip.text = element_text(color = "black"),
+        legend.position = 'bottom',
+        legend.background = element_blank(),
+        legend.text = element_text(size = 6), 
+        legend.key.size = unit(0.5, "lines"),     
+        legend.title = element_blank()) + 
+  guides(color = guide_legend(nrow = 3))+
+
+  scale_x_discrete(position = "top", na.translate = FALSE)+
+    scale_fill_gradient2(
+      low = "lightblue",
+      mid = "white",
+      high = "darkred",
+      midpoint = 0.2,
+      
+      na.value = "darkblue"
+    ) 
+
+immune.plot
+
+unique_immune <- length(na.omit(unique(immune.trim$cell.f)))
+
+```
+
+## Assemble curated panels
+
+```{r, fig.asp=65/80, fig.height=0.1, fig.align="center"}
+
+unique_labels = 2 + 
+  unique_hpa_celltypes + 
+  unique_sc_celltypes +
+  unique_immune
+
+ncol.sum = 4 * 2
+
+gap_width = -0.05
+overhead = 0.1
+
+nmf.tissue_match.plot <-          
+  plot_grid(
+     cms.plot, NULL,
+     scrna.match.plot , NULL,
+     hpa.match.plot , NULL,
+     immune.plot , NULL,
+
+     ncol = ncol.sum, align = 'h', axis = "bt", 
+     
+     rel_widths = c(
+       0.25 + (2/unique_labels) + overhead ,                gap_width,
+        (unique_sc_celltypes/unique_labels) + overhead,     gap_width / 2,
+       (unique_hpa_celltypes/unique_labels) + overhead,   gap_width / 2,
+       (unique_immune/unique_labels) + overhead, 0.3
+     )
+   )
+
+nmf.tissue_match.plot
+
+ggsave(file.path(data.dir, "results/fig", paste0(this.cohort,".nmf.tissue_match.svg")),plot =
+  nmf.tissue_match.plot
+, device = "svg", height = 70, width = 85, units = 'mm' )
+
+```
+## By site of tissue
+
+```{r}
+
+site.info <- fread(file.path(data.dir,"/results/samples.info.txt")) %>%
+  dplyr::select(Sample, cellularity, Site_of_tissue, Sample_Progression, location)
+
+site.info$Site_of_tissue[site.info$Site_of_tissue %in% c("Neck","Abdomen","Spine","Lung" )] <- 'Distant Met.'
+site.info$Site_of_tissue <- factor(site.info$Site_of_tissue, levels=c("Liver", "Hepatic Duct",  "CBD","Gallbladder", "Distant Met." ))
+
+site.test <- get_tissue_site(site.info, H_matrix_ordered_norm.melt)
+
+site.test <- left_join(site.test, y_order.convert, by=c('sig.id'='og'))
+site.test$new.f <- factor(site.test$new, levels=rev(levels(site.test$new)))
+
+site.plot <- 
+ggplot(site.test, aes(x=site, y=new)) + 
+  facet_grid(new.f ~ ., scale='free',space='free') +
+
+  geom_tile(aes(fill=effect), color = "white") +   
+
+  theme_bw(base_size = base_font_size)+ 
+  guides(size='none',shape='none')+
+
+  theme(axis.text.x = element_text(angle = x_top_angle, hjust = 0),
+       # plot.margin = unit(c(0, 10, 0, 1), "mm"),
+        panel.grid = element_blank(),
+        axis.title = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.text.y = element_blank(), 
+        panel.spacing = unit(0, "lines"), 
+        plot.background = element_blank(), 
+        panel.background = element_blank(), 
+        panel.border = element_blank(),
+        strip.background = element_blank(),     
+        strip.text =element_blank(),     
+        legend.position = 'bottom',
+        legend.background = element_blank(),
+        legend.text = element_text(size = 6), 
+        legend.key.size = unit(0.5, "lines"),     
+        legend.title = element_blank()) + 
+
+  scale_x_discrete(position = "top", na.translate = FALSE)+
+    scale_fill_gradient2(
+      low = "lightblue",
+      mid = "white",
+      high = "darkred",
+      na.value = "lightblue",
+      midpoint = 2
+    )  + coord_cartesian(clip = "off")
+  
+site.plot
+
+location.info <- site.info
+location.info$Site_of_tissue <- location.info$location
+location.info$Site_of_tissue <- factor(location.info$Site_of_tissue, levels=c("Intrahepatic","HCC-CCA" , "Perihilar" ,   "Distal"      , "Gallbladder"   ))
+location.test <- get_tissue_site(location.info, H_matrix_ordered_norm.melt)
+
+location.test <- left_join(location.test, y_order.convert, by=c('sig.id'='og'))
+location.test$new.f <- factor(location.test$new, levels=rev(levels(location.test$new)))
+
+location_plot <- 
+ggplot(location.test, aes(x=site, y=new)) + 
+  facet_grid(new.f ~ ., scale='free',space='free') +
+
+  geom_tile(aes(fill=effect), color = "white") +   
+
+  theme_bw(base_size = base_font_size)+ 
+  guides(size='none',shape='none')+
+
+  theme(axis.text.x = element_text(angle = x_top_angle, hjust = 0),
+       # plot.margin = unit(c(0, 10, 0, 1), "mm"),
+        panel.grid = element_blank(),
+        axis.title = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.text.y = element_blank(), 
+        panel.spacing = unit(0, "lines"), 
+        plot.background = element_blank(), 
+        panel.background = element_blank(), 
+        panel.border = element_blank(),
+        strip.background = element_blank(),     
+        strip.text = element_blank(),
+        legend.position = 'bottom',
+        legend.background = element_blank(),
+        legend.text = element_text(size = 6), 
+        legend.key.size = unit(0.5, "lines"),     
+        legend.title = element_blank()) + 
+
+  scale_x_discrete(position = "top", na.translate = FALSE)+
+    scale_fill_gradient2(
+      low = "lightblue",
+      mid = "white",
+      high = "darkred",
+      na.value = "lightblue",
+      midpoint = 2
+    )  + coord_cartesian(clip = "off")
+  location_plot
+
+predicted.w.score <- fread(file.path(data.dir,'/results/all.eCCS.txt') )
+predicted.w.score$rna_class[is.na(predicted.w.score$rna_class) ] <- 'Other'
+
+
+signature.6 <- H_matrix_ordered_norm.melt
+
+signature.6.info <- left_join(site.info, predicted.w.score) %>%
+  left_join(signature.6, by=c('Sample'='variable'))
+
+signature.6.info$content.bin <-NA
+signature.6.info$content.bin[signature.6.info$cellularity <= 1 ] <- 'High (>=85%)'
+signature.6.info$content.bin[signature.6.info$cellularity < 0.85 ] <- 'Mid (65-85%)'
+signature.6.info$content.bin[signature.6.info$cellularity <= 0.65 ] <- 'Low (<=65%)'
+signature.6.info$Cellularity.f <- factor(signature.6.info$content.bin, levels=c( 'High (>=85%)', 'Mid (65-85%)', 'Low (<=65%)'))
+signature.6.info <- left_join(signature.6.info, y_order.convert, by=c('sig.id'='og'))
+
+signature.6.info$rna_class.f <- factor(signature.6.info$rna_class, levels=c(  "Other","CCS-B", "CCS-A"))
+signature.6.info$new.f <- factor(signature.6.info$new, levels=rev(levels(signature.6.info$new)))
+
+plot.df <- signature.6.info %>%
+  filter(
+   # Site_of_tissue == "Liver",
+    Sample_Progression == 'Primary',
+    !is.na(rna_class),
+    !is.na(new),
+    rna_class != "Other"
+  )
+
+medians <- plot.df %>%
+  group_by(new.f, Cellularity.f, rna_class.f) %>%
+  summarise(median_val = mean(value, na.rm = TRUE), .groups = "drop")
+
+nmf.liver_primaries <- 
+ggplot(plot.df, aes(x = value, y = rna_class.f)) +
+  facet_grid(new.f ~ Cellularity.f) +
+  geom_vline(xintercept = 0) +
+
+# Thick shaft
+geom_segment(
+  data = medians,
+  aes(
+    x = 0, xend = median_val * 0.6,
+    y = rna_class.f, yend = rna_class.f,
+    linewidth = abs(median_val),
+    color = rna_class.f
+  ),
+  lineend = "butt",
+  alpha = 0.9
+) +
+
+# Arrowhead layer
+geom_segment(
+  data = medians,
+  aes(
+    x = median_val * 0.98,
+    xend = median_val,
+    y = rna_class.f,
+        alpha = abs(median_val),
+
+    yend = rna_class.f,
+    color = rna_class.f
+  ),
+  linewidth = 1,
+  arrow = arrow(
+    type = "closed",
+    length = unit(0.25, "cm")
+  )
+) +
+  ggbeeswarm::geom_quasirandom(width = 0.4, alpha = 0.5, shape=21, 
+                               size=0.8, aes(fill=rna_class.f), color='white') +
+
+  theme_bw() +
+  scale_fill_manual(  values=c(
+    "CCS-B"    = "#EDA71A" , 
+    "CCS-A" = "#04597C" ,
+    'Other' ='grey90'
+  ), na.value = 'grey90')+
+  scale_color_manual(  values=c(
+    "CCS-B"    = "#EDA71A" , 
+    "CCS-A" = "#04597C" ,
+    'Other' ='grey90'
+  ), na.value = 'grey90') +
+  theme(panel.grid = element_blank(), panel.background = element_blank(), strip.background = element_blank(),
+        legend.title = element_blank(), axis.title.y =  element_blank(), axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(), plot.background = element_blank()) + 
+  guides(linewidth='none', color='none', fill='none', alpha='none')+
+  labs(x='Normalized Signature Weight', title=' ')
+
+
+
+more.signature.variables <- 
+  plot_grid(
+     location_plot, NULL,
+     site.plot , NULL,
+     nmf.liver_primaries , NULL,
+
+
+     ncol = 6, align = 'h', axis = "bt", 
+     
+     rel_widths = c(0.2,0,0.2,0,0.6,0
+
+     )
+   )
+
+
+ggsave(file.path(data.dir, "results/fig", paste0(this.cohort,".more.signature.variables.svg")),plot =
+  more.signature.variables
+, device = "svg", height = 100, width = 150, units = 'mm' )
+
+
+```
+
+```{r}
+
+rna.htseq.all <- fread(file.path(data.dir,"/results/rna.htseq.all.txt"))
+
+replicates.write <- fread(file.path(data.dir,'results', 'replicates.txt'))
+
+rna.htseq.dup <- rna.htseq.all %>% dplyr::select(all_of(c('gene_name',replicates.write$Sample)))
+
+convert_to_nmf_input <- function(joined_file_filt, gene_set, MIN_READ = 0){
+
+  protein_genes <- gene_set$gene_name[gene_set$biotype=="protein_coding" & 
+                                      gene_set$Length >= 500 & 
+                                      gene_set$Chr %in% c(1:23)]
+
+  joined_file_protein <- joined_file_filt %>% 
+    filter(gene_name %in% protein_genes)
+  
+  genes <- joined_file_protein$gene_name
+  btc_tpm <- as.matrix(joined_file_protein[,-1])
+  rownames(btc_tpm) <- genes
+  
+  min_samples <- round(0.50*ncol(btc_tpm))
+  
+  btc_tpm_filtered <- btc_tpm[rowSums(btc_tpm > MIN_READ) >= min_samples,]
+  
+  btc_tpm_filtered <- log(btc_tpm_filtered + 1)
+  return(btc_tpm_filtered)
+}
+
+rna.htseq.norm <- convert_to_nmf_input(rna.htseq.dup, gene_set)
+rna.htseq.df <- cbind.data.frame('gene_name'=rownames(rna.htseq.norm),rna.htseq.norm)
+rna.htseq.df <- left_join(gene_set, rna.htseq.df)
+rna.htseq.df$ensid <- factor(rna.htseq.df$ensid, levels = rownames(W_matrix))
+rna.htseq.filt <- rna.htseq.df %>% filter(!is.na(ensid)) %>% arrange(ensid)
+rna.htseq.filt[is.na(rna.htseq.filt)] <- 0
+rna.htseq.mat <- as.matrix(rna.htseq.filt[,-c(1:9)])
+
+rna.sigs <- t(as.matrix(W_matrix)) %*% rna.htseq.mat 
+h.scaled <- data.frame(t(apply(rna.sigs, 1, scale)))
+names(h.scaled) <- colnames(rna.sigs)
+h.scaled$sig.id <- paste0('sig',c(1:nrow(h.scaled)))
+h.scaled.melt <- melt(h.scaled) 
+names(h.scaled.melt)[3] <- 'new.value'
+
+h.scaled.dup <- left_join(
+  h.scaled.melt,
+  replicates.write %>% dplyr::select(BTC_ID, Sample, curated, cellularity) , 
+  by=c('variable'='Sample'))
+
+h.scaled.dup$curated[h.scaled.dup$curated == 'TRUE'] <- 'curated'
+
+color.set <-    pnw_palette(name="Sailboat", n=8 )
+names(color.set) <- paste0('sig.',c(8:1))
+
+h.scaled.dcast <- dcast(h.scaled.dup, BTC_ID + sig.id ~ curated, value.var = 'new.value')
+h.scaled.dcast <- left_join(h.scaled.dcast, y_order.convert, by=c('sig.id'='og'))
+
+repeat.correlation = NULL
+for(this.sig in rev(sort(unique(h.scaled.dcast$new)))){
+  
+  cor.res <- cor.test(x = h.scaled.dcast$replicate[h.scaled.dcast$new == this.sig], 
+         y = h.scaled.dcast$curated[h.scaled.dcast$new == this.sig])
+  
+ this.correlation <-  cbind.data.frame(
+    sig = this.sig,
+    estimate = cor.res$estimate,
+    p.value = cor.res$p.value
+  )
+
+ if(is.null(repeat.correlation)){ repeat.correlation <-this.correlation } else {
+   repeat.correlation <-rbind.data.frame(repeat.correlation, this.correlation)
+ }
+ 
+}
+
+repeat.correlation$new <- factor(repeat.correlation$sig, levels=paste0('sig.',c(8:1)))
+
+replicate.nmf.plot <- 
+ggplot(repeat.correlation,aes( x=-log(p.value), y=new))+
+  geom_vline(xintercept = -log(0.05), color='grey',linetype='dotted')+
+  geom_point(aes(size=estimate, color=new))+
+  scale_color_manual(values =   color.set, na.value = 'white') +
+  theme_bw(base_size=10) +
+  theme(panel.grid = element_blank(), 
+        legend.position = 'top',
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        axis.title.y = element_blank(),
+        strip.background = element_blank()) +
+  guides(color='none') +
+  labs(size='correlation')
+
+replicate.nmf.plot
+
+ggsave(file.path(data.dir, "results/fig", 'figs3f.replicate.nmf.plot.svg'),plot =
+  replicate.nmf.plot
+, device = "svg", height = 80, width = 40, units = 'mm' )
+
+
+```
+

@@ -1,0 +1,59 @@
+---
+title: "Code Walkthrough for: Integrated whole-genome and transcriptome sequencing reveals divergent evolutionary processes across biliary tract cancer subtypes"
+output:
+  html_document:
+    self_contained: true
+---
+
+## Overview
+
+This page provides rendered HTML outputs from r-markdown of the analyses for [this pre-print](https://www.biorxiv.org/content/10.64898/2025.12.12.693962v3). 
+
+For single-sample CCS classifiers, check-out the [github repo](https://github.com/PanCuRx-OICR/btc-ccs), which also has all code and supporting functions for this page.
+
+⚠️ **Pre-publication material. All rights reserved.**
+
+***
+## Code Walkthrough
+
+### Part 0: Cohort setup
+- [Step 0.1](0.1_tumors.html) review tumor specimens
+- [Step 0.2](0.1_timelines.html) review case histories
+
+### Part 1: Signature network
+- [Step 1.1](1.1.classify_data.html) classify samples into existing transcriptomic classes
+- [Step 1.2](1.2_signature_network.html) create network of transcriptomic classes and train top scoring pair algorithm
+- [Step 1.2.1](1.2.1_classifier_robustness.html) how are classes impacted by cohort heterogeneity
+- [Step 1.2.2](1.2.2_CNV_classifier.html) train copy number variant classifier
+- [Step 1.3](1.3_location_etiology.html) classify samples by anatomical location
+- [Step 1.3.0](1.3.0_internal_survival.html) analyze survival differences in study cohort
+- [Step 1.3.1](1.3.1_external_survival.html) validate survival differences in external cohort
+
+### Part 2: Expression analysis
+- [Step 2.0](2.0_differential_expression.html) differential gene expression between subtypes
+- [Step 2.0.2](2.0.2.external_expression.html) differential methylation and protein expression between subtypes
+- [Step 2.1](2.1_nmf_rna.html) summarize NMF results
+- [Step 2.1.1](2.1.1_nmf_component_ID.html) identify NMF components
+- [Step 2.1.2](2.1.2_STIM.html) review immune signatures
+- [Step 2.2.1](2.2.1_reanalyze_SongG_2022.html) scRNA re-analysis of [Song G. et al. 2022](https://doi.org/10.1038/s41467-022-29164-0)
+- [Step 2.2.1](2.2.2_reanalyze_Zhang_2020.html) scRNA re-analysis of [Zhang et al. 2020](https://doi.org/10.1016/j.jhep.2020.05.039)
+- [Step 2.2.1](2.2.3_reanalyze_Shi_2022.html) scRNA re-analysis of [Shi et al. 2022](https://doi.org/10.1038/s41698-022-00300-9)
+
+### Part 3: Genetic Drivers
+- [Step 3.0](3.0_get_ssm_drivers.html) small substitution drivers
+- [Step 3.1](3.1_run_fishhook.html) structural variant recurrence
+- [Step 3.2](3.2_cooccurs.html) co-occurence of mutations
+- [Step 3.3](3.3_gistic_filter.html) copy number variant recurrence and effects on gene expression 
+
+### Part 4: Mutational Landscape
+- [Step 4.0](4.0.mutational_landscape.html) assemble complex biomarkers (MSI, HRD, TMB)
+- [Step 4.1](4.1.mutation_differences.html) CCS differences between mutations
+- [Step 4.2](4.2_evolutionary_timing.html) compare mutational timing
+
+***
+
+```{r}
+sessionInfo()
+```
+
+

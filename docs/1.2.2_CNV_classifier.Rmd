@@ -1,0 +1,415 @@
+# Use eCCS to train gCCS
+We quickly noticed that we'd want a genetic based classifier to capture the eCCS, if possible. The main target was panel data so to give us  access to the most different panels, we settle on using average arm-level relative (T/N) copy. 
+
+The problem we ran into was that the model didn't translate well at first to TCGA and ICGC cohorts, and we were able to diagnose the issue that these cohorts had lower tumor content (compared to our LCM cohort) so the weights for each arm in the glm were too small. To deal with this, we decided to directly add in a proxy for tumor content. We first played with tumor content estimated from optimization of the ploidy / cellularity trade-off directly from the CNV data, but most datasets didn't offer this value; a much more accessible proxy was the median variant allele frequency of tumor variants. Although technically not as precise, we found in practice this did a good enough job.
+
+## Start with variance in arm-level copies
+To first decide which chromosome arms to include in the model, we run a PCA on arm-level copies and then keep the top components (rather than a model with 44 parameters).
+
+```{r}
+
+suppressWarnings(
+suppressPackageStartupMessages({
+  library(data.table)
+  library(tidyr)
+  library(dplyr)
+  library(stringr)
+  library(tibble)
+  library(CNTools)
+  library(FactoMineR)
+  library(pROC)
+  library(ggplot2)
+  library(gghalves)
+}))
+
+`%ni%` <- Negate(`%in%`)
+
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
+source( file.path(data.dir, "paths.R"))
+
+source( file.path(code.dir, "bin/BTC.functions.R"))
+
+predicted.w.score <- fread(file.path(data.dir,'/results/all.eCCS.txt') )
+clinic.sample.info <- fread(file.path(data.dir,"/results/samples.info.txt"), header=T)
+clinic.sample.info <- left_join(clinic.sample.info, predicted.w.score)
+
+rewrite.cluster = T
+if(rewrite.cluster){
+  
+    write.table( clinic.sample.info %>% filter(rna_class == 'CCS-A') %>% dplyr::select(Sample),  
+                 file = file.path(data.dir,"/results/CCSA.list.txt"), 
+                 row.names = FALSE, col.names = F, quote = FALSE, sep = "\t")
+
+    write.table( clinic.sample.info %>% filter(rna_class == 'CCS-B') %>% dplyr::select(Sample),  
+               file = file.path(data.dir,"/results/CCSB.list.txt"), 
+               row.names = FALSE, col.names = F, quote = FALSE, sep = "\t")
+
+}
+
+# get genes
+gene_set <- fread(file.path(data.dir,'/source_data/fgs.txt'))
+gene_set$Chr <- paste0('chr',gene_set$Chr)
+
+genebed <- gene_set
+genebed <- genebed %>% filter(biotype=="protein_coding" & Length >= 500 & Chr %ni% c('chr24','chr25')) %>%
+  dplyr::select(Chr, Start,   End,ensid, gene_name) 
+
+names(genebed) <- c('chrom',	'start',	'end',	'geneid',	'genename')
+
+write.table( genebed,  
+           file = file.path(code.dir,"/data/genebed.hg38.txt"), 
+           row.names = F, col.names = T, quote = FALSE, sep = "\t")
+
+    
+all.seg <- fread(file.path(data.dir,'/results/all.seg.txt'), 
+                 col.names = c('ID','chrom','loc.start','loc.end','num.mark','seg.mean'))
+all.seg <- all.seg %>% filter(!is.na(seg.mean))
+length(unique(all.seg$ID))
+
+segmented.data <- CNSeg(all.seg)
+segment.gene <- getRS(segmented.data, by="gene", imput=FALSE, XY=FALSE, geneMap=genebed, what="min")
+segment.gene <- rs(segment.gene)
+
+seg.mat <- as.matrix(segment.gene[,-c(1:5)])
+row.names(seg.mat) <- segment.gene$genename
+
+
+## group by cytoband ##
+
+cytoBand <- fread(file.path(data.dir,'/source_data/cytoBand.txt'), na.strings = '') %>% filter(!is.na(Chromosome))
+
+cytoBand<- separate(cytoBand, col = Chromosome, into = c('band','period'), sep = '\\.', remove=F, extra = 'drop', fill = 'right')
+
+cytoBand <- cytoBand %>%
+  mutate(
+    parts = str_match(band, "^(.*?[pq])(.*)$"),
+    arm = parts[,2],
+    armband = parts[,3]
+  ) %>%
+  dplyr::select(-parts) %>% filter(!is.na(arm) & arm %ni% c('Xq','Xp','Yp','Yq'))
+
+write.table( cytoBand,  
+           file = file.path(code.dir,"/data/cytoband.txt"), 
+           row.names = F, col.names = T, 
+           quote = FALSE, sep = "\t")
+
+
+segment.gene.cyto <- inner_join(cytoBand, segment.gene,  by=c('Hugo_Symbol'='genename'), relationship = "many-to-many")
+
+
+arm.med <- segment.gene.cyto %>%
+  group_by(arm ) %>%  
+  summarise( across(11:ncol(segment.gene.cyto)-1, \(x) median(x, na.rm = TRUE)) ) 
+
+arm.pca <- PCA(t(arm.med[,-1]), graph = F)
+
+allOfit_pca_labs <- cbind.data.frame(Sample=names(arm.med[,-1]),
+                                     
+                                     arm.pca$ind$coord
+)
+
+allOfit_pca_labs <- left_join(allOfit_pca_labs, predicted.w.score, by=c('Sample'='Sample')) %>%
+  filter(!is.na(rna_class))
+
+ggplot(allOfit_pca_labs, aes(x=Dim.1, y=Dim.2, color=rna_class)) + 
+  stat_ellipse(level=0.95, alpha=0.7)+
+  geom_point(size=1) + 
+  theme_bw(base_size=10) + 
+  
+  scale_color_manual(values=c('CCS-A'="#04597C", 'CCS-B'="#EDA71A"), na.value = 'grey80') +
+  theme(panel.grid = element_blank())
+
+arm.pca.contrib <- cbind.data.frame('arm'=arm.med$arm,  arm.pca$var$contrib) %>% arrange(desc(Dim.1))
+arm.pca.contrib[1:10,]
+
+```
+
+## Add in variant allele frequency to account for tumor content
+We show that 2 * mean VAF (assuming that most tumor variants are heterozygous) still under-estimates cellularity, but it is systematic enough that it works as a proxy.
+
+```{r}
+
+# Transpose while preserving numeric types
+transposed.raw <- arm.med %>%
+  column_to_rownames(var = names(arm.med)[1]) %>%  # Use first column as rownames
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Sample") %>%
+  mutate(across(-Sample, as.numeric)) %>%  # Ensure numeric columns
+  as_tibble() 
+
+names(transposed.raw)[-1] <- paste0('arm.',names(transposed.raw)[-1])
+
+#### get median ####
+ 
+pull.median=F
+if(pull.median){
+  
+
+  first.tumor=T
+  for(tumour_id in clinic.sample.info$Sample){
+
+    donor_id <- clinic.sample.info$BTC_ID[clinic.sample.info$Sample == tumour_id]
+    
+    evol.file <- paste0(file.path(cluster.dir, 'users/fbeaudry/more.data/'),tumour_id,'/pyclone/',tumour_id,'.snv.depths.txt')
+    info.file <- paste0(file.path(cluster.dir, 'users/fbeaudry/more.data/'),tumour_id,'/pyclone/',tumour_id,'.snv.info.txt')
+    
+    if(all(file.exists(evol.file) & file.exists(info.file) )){
+      
+      message(tumour_id, ' file found')
+      evol.data <- fread(evol.file)
+      info.data <- fread(info.file) 
+      evol.data <-  evol.data %>% filter(mutation_id %in% info.data$mutation_id[info.data$ANNOVAR_EXONIC != 'False'])
+      
+      vaf.df <- cbind.data.frame('Sample'= tumour_id,
+                                 'median.vaf' = median( evol.data$alt_counts / (evol.data$alt_counts + evol.data$ref_counts) , na.rm = T),
+                                 'mean.vaf' = mean( evol.data$alt_counts / (evol.data$alt_counts + evol.data$ref_counts) , na.rm = T)
+      )
+      
+      if(first.tumor){all.vaf.df <- vaf.df; first.tumor =F }else {all.vaf.df <- bind_rows(all.vaf.df, vaf.df)}
+      
+    } else {
+      message('!!',tumour_id, 'file not found!!')
+      
+    }
+  }
+  
+  write.table(
+    all.vaf.df,
+    file = file.path(data.dir,'/results/median.vaf.txt'),
+    row.names = FALSE, quote = FALSE, sep = "\t"
+  )
+} else {
+  all.vaf.df <- fread(file.path(data.dir,'/results/median.vaf.txt') )
+}
+
+all.vaf.df<- full_join(clinic.sample.info, all.vaf.df, by=c('Sample'='Sample'))
+
+cor.test(all.vaf.df$cellularity, 2*all.vaf.df$median.vaf)
+cor.test(all.vaf.df$cellularity, 2*all.vaf.df$mean.vaf)
+
+ggplot(all.vaf.df, aes(x=cellularity, y=2*mean.vaf)) + 
+  geom_point() + theme_bw() + geom_abline(slope = 1)
+
+transposed <- inner_join(all.vaf.df, transposed.raw, by=c('Sample'='Sample'))
+
+transposed$predicted_label <- NA
+transposed$predicted_label[transposed$rna_class == 'CCS-A'] <- 1
+transposed$predicted_label[transposed$rna_class == 'CCS-B'] <- 0
+
+```
+
+## train generalized linear model (glm)
+
+```{r}
+
+refind.feature = T
+
+if(refind.feature){
+  
+  predictor_vars <- paste0('arm.', arm.pca.contrib$arm[1:10])  # Extract the list of predictors
+  
+  formula_obj <- reformulate(termlabels = c(predictor_vars, 'mean.vaf'), response = "predicted_label")
+  
+  full_model <- glm(formula_obj, data = transposed , family = binomial)
+  
+  reduced_model <- step(full_model, direction = "both")
+  
+  reduced_model_summary <- summary(reduced_model)
+  
+  print(reduced_model_summary$coefficients)
+  
+  
+}
+
+retrain.model = F
+
+if(retrain.model){
+  
+  ccsa.samples <- transposed$Sample[transposed$rna_class == 'CCS-A']
+  ccsb.samples <- transposed$Sample[transposed$rna_class == 'CCS-B']
+
+  train.set <- 
+    c(sample(ccsa.samples, size=length(ccsa.samples) * 0.8, replace = F),
+      sample(ccsb.samples, size=length(ccsb.samples) * 0.8, replace = F))
+  test.set <- transposed$Sample[transposed$Sample %ni% train.set]
+
+  cna.training.samples <- list('training_set'=train.set, 'test_set'=test.set)
+
+  full_model <- glm(predicted_label ~ arm.1q + arm.4p + arm.13q + arm.18q + arm.19p + mean.vaf,  
+                    data = transposed %>% filter(Sample %in% train.set), 
+                    family = binomial)
+
+  saveRDS(cna.training.samples, file.path(data.dir,'/results/cna.training.samples.rds'))
+  saveRDS(full_model, file = file.path(data.dir,'/results/cnv.model.rds'))
+
+  model.date <- format(Sys.time(), "%y%m%d")
+  saveRDS(full_model, file = paste0(data.dir,'/results/cnv.model.',model.date,'.rds'))
+  
+  
+}else{
+  
+  full_model <- readRDS(file.path(data.dir,'/results/cnv.model.rds'))
+   
+  cna.training.samples <- readRDS( file.path(data.dir,'/results/cna.training.samples.rds'))
+  test.set <- cna.training.samples[['test_set']]
+  train.set <- cna.training.samples[['training_set']]
+
+}
+
+summary(full_model)
+length(test.set)
+
+train.data <- transposed %>% filter(Sample %in% train.set)
+train.data$prob <- predict(full_model, transposed %>% filter(Sample %in% train.set), type = "response")
+roc_obj <- roc(train.data$predicted_label, train.data$prob)
+THRESHOLD <- round(coords(roc_obj, "best", ret = c("threshold", "sensitivity", "specificity"))$threshold,2)
+THRESHOLD
+
+test.data <- transposed %>% filter(Sample %in% test.set)
+test.data$prob <- predict(full_model, transposed %>% filter(Sample %in% test.set), type = "response")
+roc_obj <- roc(test.data$predicted_label, test.data$prob)
+
+test.data$glm_labels <- ifelse(test.data$prob > THRESHOLD, 1, 0)
+table(test.data[,c('predicted_label', 'glm_labels')])
+
+auc(roc_obj)
+plot(roc_obj)
+
+cnv_prediction.test_set.plot <- 
+    ggplot(test.data %>% filter(!is.na(rna_class)) , aes(x=reorder(Sample, prob), y=prob)) + 
+       geom_hline(yintercept = THRESHOLD, color='grey80', linetype='dotted') +
+      geom_point(aes(color=factor(rna_class)),    size=1) + 
+      
+      theme_bw(base_size=10) +
+      scale_color_manual(
+        values = c( 'CCS-A'="#04597C", 'CCS-B'="#EDA71A" ), 
+        na.value = 'grey80')  +
+      
+      guides(color='none',fill='none')+
+       theme(panel.grid = element_blank(),
+                     plot.margin = unit(c(0, 0, 0, 0), "mm"),
+             panel.background = element_blank(), 
+             plot.background = element_blank(),
+             axis.text.x = element_blank(),
+             axis.ticks.x = element_blank()
+             ) + 
+       labs(x='Test Samples (Sorted)', y='CNA-Based Probability of CCS-A',color='') +
+       scale_y_continuous(breaks = c(0,THRESHOLD,1))
+     
+cnv_prediction.test_set.plot
+
+ggsave(filename=paste0(data.dir, "/results/fig/FIGS2f.cnv_prediction.test_set.svg"), plot = 
+         cnv_prediction.test_set.plot
+      ,   device = "svg",width = 55, height = 58, units = 'mm', dpi=72 )
+
+
+```
+
+## validate in external data
+We test the model using copy number and expression data generated in [Farshidfar et al. 2017](http://dx.doi.org/10.1016/j.celrep.2017.02.033) (which you can  download from [cbioportal](https://www.cbioportal.org/study/summary?id=chol_tcga_gdc)). We also add in TP53/BAP1 mutations to the plot, although in the paper narrative we haven't established how these segregate differently by CCS yet.
+
+```{r}
+
+far.cn <- fread(file.path(data.dir,'/source_data/cbioportal/chol_tcga_gdc/data_cna_hg38.seg'))
+far.cn$chrom <- paste0('chr',far.cn$chrom)
+
+far.cn <- far.cn %>% filter(!is.na(seg.mean))
+
+far.mut <- fread(file.path(data.dir,'/source_data/cbioportal/chol_tcga_gdc/data_mutations.txt'))
+far.mut$mean.vaf <- far.mut$t_alt_count / (far.mut$t_ref_count + far.mut$t_alt_count)
+
+far.med.vaf <- far.mut %>%
+  group_by(Tumor_Sample_Barcode ) %>% 
+  summarise(across(mean.vaf, \(x) mean(x, na.rm = TRUE)))
+
+ggplot(far.med.vaf, aes(x=mean.vaf * 2)) + geom_histogram() + theme_bw() + xlim(0,1)
+
+far.transposed.raw <- predict_gCCS(cn = far.cn, 
+                               med.vaf = far.med.vaf, 
+                               genebed, cytoBand, full_model )
+
+## compare to RNA class
+far.mrna <- fread(file.path(data.dir,'/source_data/cbioportal/chol_tcga_gdc/data_mrna_seq_tpm.txt'))
+gene_info <- fread(file.path(data.dir,'/source_data/cbioportal/gene_info.txt'))
+far.mrna <- inner_join(gene_info, far.mrna, by=c('ENTREZID'='Entrez_Gene_Id'))
+
+far.mrna.mat <- as.matrix(far.mrna[,-c(1:2)])
+rownames(far.mrna.mat) <- far.mrna$Hugo_Symbol
+
+classifier <- readRDS(file.path(data.dir,'/results/tps.classifier.rds'))
+far.predicted.w.score <- predict_TSP_with_confidence(tsp_classifier=classifier, 
+                                                     tpm_matrix=far.mrna.mat, 
+                                                     confidence_cutoff = 10/16 )
+
+far.predicted.w.score$Tumor_Sample_Barcode <- rownames(far.predicted.w.score)
+
+## pull common muts
+
+far.driver <- far.mut %>% filter(Hugo_Symbol %in% c('BAP1','FGFR2','IDH1','TP53','SMAD4')) %>% 
+  dplyr::select(Tumor_Sample_Barcode, Hugo_Symbol) %>% 
+  dcast(Tumor_Sample_Barcode ~ Hugo_Symbol, value.var = 'Hugo_Symbol')
+
+far.driver[is.na(far.driver)] <- 0
+
+far.driver.cms.cnv <- full_join(far.driver,far.predicted.w.score, by=c('Tumor_Sample_Barcode'='Tumor_Sample_Barcode') ) %>% 
+  full_join(far.transposed.raw, by=c('Tumor_Sample_Barcode'='Tumor_Sample_Barcode')) 
+
+far.driver.cms.cnv$sample <- factor(far.driver.cms.cnv$Tumor_Sample_Barcode, 
+                                    levels=far.driver.cms.cnv$Tumor_Sample_Barcode[order(far.driver.cms.cnv$prob)])
+
+far.roc_obj <- roc(far.driver.cms.cnv$predicted_label, far.driver.cms.cnv$prob)
+auc(far.roc_obj)
+
+plot(far.roc_obj)
+
+coords(far.roc_obj, THRESHOLD, ret = c("threshold", "sensitivity", "specificity"))
+
+
+far.driver.cms.cnv$glm_labels <- ifelse(far.driver.cms.cnv$prob > THRESHOLD, 'gCCS-A', 'gCCS-B')
+
+far.driver.cms.cnv$driver.class <- NA
+far.driver.cms.cnv$driver.class[far.driver.cms.cnv$BAP1 == 'BAP1'] <- 'BAP1+'
+far.driver.cms.cnv$driver.class[far.driver.cms.cnv$TP53 == 'TP53'] <- 'TP53+'
+
+cnv_prediction.farshidfar.plot <- 
+ggplot(far.driver.cms.cnv   %>% filter(!is.na(prob)), aes(x=reorder(Tumor_Sample_Barcode, prob), y=prob)) + 
+  
+  geom_hline(yintercept = THRESHOLD, color='grey', linetype='dotted')+
+  
+  geom_point(aes( color=factor(rna_class)),   size=1) + 
+  scale_size(range = c(0.1,1.5))  +
+  
+  theme_bw(base_size=10) +
+  scale_color_manual(values = c('BAP1+'='#04597C',
+                                'TP53+'='#EDA71A',
+                                'CCS-A'="#04597C",
+                                'CCS-B'="#EDA71A"
+  ), 
+  na.value = 'grey80')  +
+  theme(panel.grid = element_blank(),
+        plot.margin = unit(c(0, 0, 0, 0), "mm"),
+
+        panel.background = element_blank(), 
+        plot.background = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) + 
+        guides(color='none')+
+       scale_y_continuous(breaks = c(0,THRESHOLD,1))+
+       labs(x='Farshidfar et al. Samples (Sorted)', y='CNA-Based Probability of CCS-A',color='') 
+
+cnv_prediction.farshidfar.plot
+
+ggsave(filename=paste0(data.dir, "/results/fig/FIGS2g.cnv_prediction.farshidfar.plot.svg"), plot = 
+         cnv_prediction.farshidfar.plot
+      ,   device = "svg",width = 55, height = 58, units = 'mm', dpi=72 )
+
+
+write.table(
+  far.driver.cms.cnv %>% dplyr::select(Tumor_Sample_Barcode, rna_class, confidence, glm_labels, prob, driver.class),
+  file = file.path(data.dir,'/results/tcga.cms.txt'),
+  row.names = FALSE, quote = FALSE, sep = "\t"
+)
+
+```

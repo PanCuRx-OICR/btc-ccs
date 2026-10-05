@@ -1,0 +1,673 @@
+# Assemble and explore specimen cohort
+
+## Load Environment
+
+```{r}
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(readxl)
+  library(purrr)
+  
+  library(ggplot2)
+  library(ggupset)
+  library(cowplot)
+  library(PNWColors)
+})
+
+code.dir = '~/Documents/scripts/github/btc-ccs/'
+data.dir = '~/Documents/scripts/github/btc-ccs-data/'
+source( file.path(code.dir, "bin/clinical.functions.R"))
+
+overwrite.files = T
+
+
+```
+
+## What are the samples?
+
+We'll start by looking at all cases on file, including fresh frozen (FF) and FFPE samples, those that are laser capture microdissected (LCM) and those that are not, and assessing their cellularity. Samples where tumor content is above 30% are kept. We also keep only one tumor specimen per patient. You can make the `rna.tpm` file with `bin/make_rna_table.R`.
+
+```{r}
+
+BTC_clinical.tumours <- fread(file.path(data.dir,'/source_data/BTC_clinical.tumours.tsv'), header=T)
+
+btc.cellularity <- fread(file.path(data.dir,'/results/btc.cellularity.curated.txt'), col.names = c('Sample','cellularity','ploidy'), header=F)
+BTC_clinical.tumours <- full_join(BTC_clinical.tumours, btc.cellularity, by=c('Sample'='Sample'))
+
+sample.list <- fread(file.path(data.dir,'/source_data/sample.list.txt'), col.names = c('donor','tumour','normal'), header=F)
+
+BTC_clinical.tumours$curated <- F
+BTC_clinical.tumours$curated[BTC_clinical.tumours$Sample %in% sample.list$tumour] <- T
+
+replicates <- BTC_clinical.tumours %>% group_by(Donor) %>% tally() %>% filter(n>1)
+BTC_clinical.tumours$replicates <- F
+BTC_clinical.tumours$replicates[BTC_clinical.tumours$Donor %in% replicates$Donor] <- T
+
+BTC_clinical.tumours$curated[BTC_clinical.tumours$curated == F & BTC_clinical.tumours$replicates == T] <- 'replicate'
+
+BTC_clinical.tumours <- BTC_clinical.tumours %>% filter(curated == T)
+
+rna.tpm.all <- fread(file.path(data.dir,"/results/rna.tpm.all.txt"))
+
+BTC_clinical.tumours$rna <- F
+BTC_clinical.tumours$rna[BTC_clinical.tumours$Sample %in% names(rna.tpm.all)] <- T
+
+BTC_clinical.tumours$previous <- 'new'
+BTC_clinical.tumours$previous <- ifelse(substr(BTC_clinical.tumours$Sample, 5, 5) == "9", 
+                                        'Holzapfel 2023', BTC_clinical.tumours$previous)
+
+mtb.cohort <- fread(file.path(data.dir,'/source_data/cohort_outcomes.txt'))
+BTC_clinical.tumours$previous[BTC_clinical.tumours$Donor %in% mtb.cohort$BTC_ID] <- 'Beaudry 2025'
+
+specimen_type_n <- BTC_clinical.tumours %>%
+  dplyr::count(
+    `Sample Source(FFPE, FF)`,
+    `Group ID(LCM/non-LCM)`,
+    rna
+  )
+
+df <- expand_grid(
+  sample_source = c("FF", "FFPE"),
+  lcm = c("LCM", "no LCM"),
+  rna = c(FALSE, TRUE)
+) %>%
+  mutate(
+    sets = pmap(
+      list(sample_source, lcm, rna),
+      ~ {
+        out <- c()
+
+        if (..1 == "FF") out <- c(out, "FF")
+        if (..2 == "LCM") out <- c(out, "LCM")
+        if (..3) out <- c(out, "RNA")
+
+        if (length(out) == 0) out <- ""
+
+        out
+      }
+    )
+  ) %>%
+  left_join(
+    specimen_type_n,
+    by = c(
+      "sample_source" = "Sample Source(FFPE, FF)",
+      "lcm" = "Group ID(LCM/non-LCM)",
+      "rna"
+    )
+  ) %>%
+  mutate(n = coalesce(n, 0)) %>%
+  arrange(n)
+
+sum(df$n)
+
+specimen_type.tally <-  ggplot(df, aes(x = sets, y=n)) +
+  
+    geom_bar(stat='identity') +
+    scale_x_upset(order_by = "degree",reverse = T) +
+    theme_minimal(base_size=10) + 
+    #labs(y=('CMS-B LOD')) + 
+    theme(panel.grid = element_blank(), 
+          panel.background = element_blank(),
+          plot.background = element_blank(),
+          plot.margin = unit(c(0, 0, 0, 0), "mm"),
+          axis.title.x = element_blank()) +
+    scale_y_continuous(breaks = c(25,50,75, 100))
+
+specimen_type.tally
+
+ggsave(paste0( data.dir,"/results/fig/FIGS1b-1.specimen_type.tally.svg"),
+       plot =specimen_type.tally
+, device = "svg", width = 55, height = 65, units = 'mm', dpi=72 )
+
+cohort.n <- nrow(BTC_clinical.tumours)
+new.cohort.n <- nrow(BTC_clinical.tumours[BTC_clinical.tumours$previous == 'new',])
+old.cohort.n <- nrow(BTC_clinical.tumours[BTC_clinical.tumours$previous %in% c('Holzapfel 2023','Beaudry 2025')])
+
+message('We analyzed ',cohort.n,' cases of BTC, including ',
+        new.cohort.n,' new cases recruited prospectively and ',
+        old.cohort.n,' previously reported cases ')
+
+message('The whole genome of one tumor specimen was sequenced for every case (WGS) ',
+        'and underwent whole transcriptome sequencing (WTS) when enough tissue remained (n = ',
+        nrow(BTC_clinical.tumours[BTC_clinical.tumours$rna ]),').')
+
+message('most samples were enriched using laser-capture microdissection before sequencing (n = ',
+        nrow(BTC_clinical.tumours[BTC_clinical.tumours$`Group ID(LCM/non-LCM)` == "LCM", ]),')')
+
+message('Fresh frozen samples (n = ',
+        nrow(BTC_clinical.tumours[BTC_clinical.tumours$`Sample Source(FFPE, FF)` == "FF", ]),
+        ') were preferred over formalin-fixed paraffin-embedded tissue (n = ',
+        nrow(BTC_clinical.tumours[BTC_clinical.tumours$`Sample Source(FFPE, FF)` == "FFPE", ])
+        )
+```
+
+## Coverage stats
+
+```{r}
+
+btc.coverage <- fread(file.path(data.dir,'/results/btc.coverage.txt'))
+btc.coverage <- btc.coverage %>% 
+  filter(V1 %in% c(sample.list$tumour, sample.list$normal))
+
+length(unique(btc.coverage$V1[btc.coverage$V2 == 'T']))
+
+median(btc.coverage$V4[btc.coverage$V2 == 'T'])
+median(btc.coverage$V4[btc.coverage$V2 == 'N'])
+
+btc.rna.coverage <- fread(file.path(data.dir,'/results/btc.rna.coverage.txt'))
+
+hist(btc.rna.coverage$V3[btc.rna.coverage$V1 %in% sample.list$tumour])
+message(round(median(btc.rna.coverage$V3[btc.rna.coverage$V1 %in% sample.list$tumour])/1000000, 0), ' million transcripts')
+
+```
+
+## Add in clinical information
+We first combine data from the LeGresley Biliary Registry with other BTC cases at UHN that have much less clinical annotation, mostly from the previous publication [Holzapfel et al 2023](https://dx.doi.org/10.21037/jgo-22-676). We do a little data cleaning and check broad cohort stats.
+
+```{r}
+
+excel_path = file.path(data.dir,"/source_data/DATA_LOCK_LegresleyBiliaryRegi_DATA_2026-06-29.xlsx")
+
+suppressMessages({
+  suppressWarnings({
+    lbr.clinic.all <- read_excel(excel_path, sheet = 2, skip = 0)
+  })
+})
+
+lbr.clinic.all <- make_clean_names(lbr.clinic.all)
+lbr.clinic.all$Study_ID <- sprintf("LBR-%04d", lbr.clinic.all$Study_ID)
+
+lbr.clinic <- lbr.clinic.all %>% filter(is.na(Repeat_Instrument))
+
+BTC_clinical.tumours$EHR <- F
+BTC_clinical.tumours$EHR[BTC_clinical.tumours$`Study ID` %in% lbr.clinic$Study_ID] <- T
+
+suppressMessages({
+  suppressWarnings({
+  non.lbr.clinic <- read_excel(file.path(data.dir,"/source_data/non-lbr.xlsx"), sheet = 1, skip = 0)
+  })
+})
+
+non.lbr.clinic <- make_clean_names(non.lbr.clinic)
+BTC_clinical.tumours$EHR[BTC_clinical.tumours$Donor %in% non.lbr.clinic$BTC_ID] <- T
+
+
+BTC_clinical.tumours %>% dplyr::select(`Study ID`, Donor, EHR) %>% 
+  arrange(desc(`Study ID`)) %>% filter(EHR == T) %>% nrow()
+
+## match non-LBR names
+names(non.lbr.clinic)[names(non.lbr.clinic) == "Age_at_Diagnosis"] <- 'Age_at_first_histological_diagnosis'
+names(non.lbr.clinic)[names(non.lbr.clinic) == "Adjuvant_Chemotherapy_1"] <- 'Adjuvant_Chemotherapy'
+names(non.lbr.clinic)[names(non.lbr.clinic) == "Sex"] <- 'Sex_assigned_at_birth'
+names(non.lbr.clinic)[names(non.lbr.clinic) == "alive_holzapfel"] <- 'Status'
+names(non.lbr.clinic)[names(non.lbr.clinic) == "Cancer_Stage_at_Diagnosis"] <- 'Overall_Stage_at_Diagnosis'
+names(non.lbr.clinic)[names(non.lbr.clinic) == "M_at_diagnosis_TNM_staging"] <- 'M_at_diagnosis'
+names(non.lbr.clinic)[names(non.lbr.clinic) == "N_at_diagnosis_TNM_staging"] <- 'N_at_diagnosis'
+
+
+non.lbr.clinic$M_at_diagnosis <- paste0('M',non.lbr.clinic$M_at_diagnosis)
+non.lbr.clinic$N_at_diagnosis <- paste0('N',non.lbr.clinic$N_at_diagnosis)
+non.lbr.clinic$M_at_diagnosis[non.lbr.clinic$M_at_diagnosis == 'MNA'] <- 'Unknown'
+non.lbr.clinic$N_at_diagnosis[non.lbr.clinic$N_at_diagnosis == 'NNA'] <- 'Unknown'
+
+non.lbr.clinic$Status[non.lbr.clinic$Status == "F"] <- "Expired"
+non.lbr.clinic$Status[non.lbr.clinic$Status == "T"] <- "Alive"
+
+non.lbr.clinic$Sex_assigned_at_birth[non.lbr.clinic$Sex_assigned_at_birth == "Female (assumed or known XX)"] <- "Female"
+non.lbr.clinic$Sex_assigned_at_birth[non.lbr.clinic$Sex_assigned_at_birth == "Male (assumed or known XY)"] <- "Male"
+
+non.lbr.clinic$Anatomical_Location_choiceGallbladder <- "Unchecked"
+non.lbr.clinic$Anatomical_Location_choiceGallbladder[non.lbr.clinic$anatomical_location == "GBC"] <- "Checked"
+
+non.lbr.clinic$Anatomical_Location_choiceIntrahepatic_CCA_iCCA <- "Unchecked"
+non.lbr.clinic$Anatomical_Location_choiceIntrahepatic_CCA_iCCA[non.lbr.clinic$anatomical_location == "iCCA"] <- "Checked"
+
+non.lbr.clinic$Anatomical_Location_choiceExtrahepatic_CCA_eCCA <- "Unchecked"
+non.lbr.clinic$Anatomical_Location_choiceExtrahepatic_CCA_eCCA[non.lbr.clinic$anatomical_location == "pCCA"] <- "Checked"
+non.lbr.clinic$Specify_Extrahepatic_CCA_choicePerihilarHilar_Klatskins_pCCA <- "Unchecked"
+non.lbr.clinic$Specify_Extrahepatic_CCA_choicePerihilarHilar_Klatskins_pCCA[non.lbr.clinic$anatomical_location == "pCCA"] <- "Checked"
+
+non.lbr.clinic$Study_ID <- non.lbr.clinic$BTC_ID
+
+non.lbr.clinic$Type_of_Surgery <- NA
+non.lbr.clinic$Type_of_Surgery[non.lbr.clinic$Curative_surgery_attempted == 'Yes'] <- "Initial Curative"
+
+non.lbr.clinic$First_line_palliative_chemotherapy_given_choiceGemcitabine <- NA
+non.lbr.clinic$First_line_palliative_chemotherapy_given_choiceGemcitabine[!is.na(non.lbr.clinic$First_line_palliative_chemotherapy_given)] <- 'Checked'
+
+all.clinic <- align_df2_to_df1(df1=lbr.clinic, df2=non.lbr.clinic)
+
+all.clinic <- all.clinic %>% filter(Study_ID %in% BTC_clinical.tumours$`Study ID` | Study_ID %in% BTC_clinical.tumours$Donor )
+nrow(all.clinic)
+
+all.clinic$Overall_Stage_at_Diagnosis.precise <- all.clinic$Overall_Stage_at_Diagnosis
+all.clinic$Overall_Stage_at_Diagnosis[all.clinic$Overall_Stage_at_Diagnosis %in% c('I','IA','IB','II','IIB')] <- 'I & II'
+all.clinic$Overall_Stage_at_Diagnosis[all.clinic$Overall_Stage_at_Diagnosis %in% c('IIIA','IIIB','IIIC')] <- 'III'
+all.clinic$Overall_Stage_at_Diagnosis[all.clinic$Overall_Stage_at_Diagnosis %in% c('IV','IVA','IVB')] <- 'IV'
+
+if(overwrite.files){
+  write.table( all.clinic,  
+               file = file.path(data.dir,"/results/clinic.info.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+}
+
+```
+
+## Analyze cases by anatomical location of the primary tumor
+
+```{r}
+
+locations <- all.clinic %>%
+  dplyr::select(
+    starts_with("Study_ID") |
+      starts_with("Anatomical_Location") |
+      starts_with("Specify_other_tumour_location") |
+      starts_with("Specify_Extrahepatic")
+  ) %>% reshape2::melt(id.vars = c('Study_ID')) %>% 
+  filter(value %ni% c('Unchecked','') & variable != 'Other' & !is.na(value))
+
+locations$variable <- gsub('Anatomical_Location_choice','',locations$variable)
+
+locations$variable[locations$value %in% c('Combined HCC/CCA (solitary segment 8)',
+                                          'Combined HCC/CCA and CCA',
+                                          'mixed CCA-HCC',
+                                          'Combined HCC-CCA',
+                                          'Mixed HCC-CCA')] <- 'HCC-CCA'
+
+locations$variable[locations$value %in% c('dCCA or GB/cystic duct')] <- 'CCA NOS'
+
+primary_location <- locations %>% 
+  group_by(Study_ID) %>%
+  summarise(variable = str_c(variable, collapse = "+"), .groups = "drop") 
+
+eCCA.loc <- locations %>% filter( str_starts(variable, "Specify_Extrahepatic_CCA_choice")) 
+eCCA.loc$variable <- gsub('Specify_Extrahepatic_CCA_choice','',eCCA.loc$variable)
+
+eCCA.loc <- reshape2::dcast(eCCA.loc, Study_ID ~ variable)
+eCCA.loc$eCCA <- NA
+eCCA.loc$eCCA[eCCA.loc$Distal_CCA_dCCA == 'Checked' & is.na(eCCA.loc$eCCA)] <- 'Distal_CCA_dCCA'
+eCCA.loc$eCCA[eCCA.loc$Common_bile_duct == 'Checked' & is.na(eCCA.loc$eCCA)] <- 'Distal_CCA_dCCA'
+eCCA.loc$eCCA[eCCA.loc$PerihilarHilar_Klatskins_pCCA == 'Checked' & is.na(eCCA.loc$eCCA)] <- 'Perihilar_CCA_pCCA'
+eCCA.loc$eCCA[eCCA.loc$Common_hepatic_duct == 'Checked' & is.na(eCCA.loc$eCCA)] <- 'Perihilar_CCA_pCCA'
+
+primary_location <- left_join(primary_location, eCCA.loc %>% dplyr::select(Study_ID, eCCA))
+primary_location$variable[!is.na(primary_location$eCCA)] <- primary_location$eCCA[!is.na(primary_location$eCCA)]
+
+primary_location$variable <- gsub('Intrahepatic_CCA_iCCA\\+Other\\+HCC-CCA','HCC-CCA',primary_location$variable)
+primary_location$variable <- gsub('Other\\+HCC-CCA','HCC-CCA',primary_location$variable)
+primary_location$variable <- gsub('Other\\+Specify_other_tumour_location','CCA NOS',primary_location$variable)
+
+unique(primary_location$variable)
+
+## Manual Review from Danielle A. 26/07/07
+primary_location$variable[primary_location$Study_ID == 'LBR-0200'] <- 'Intrahepatic_CCA_iCCA'
+primary_location$variable[primary_location$Study_ID == 'LBR-0327'] <- 'HCC-CCA'
+
+primary_location_tally <- primary_location %>% group_by(variable) %>% tally()
+primary_location %>% group_by(Study_ID) %>% tally() %>% filter(n>1)
+
+ggplot(primary_location_tally, aes(x=reorder(variable, -n), y=n)) + 
+  geom_bar(stat='identity',aes(fill=variable)) +
+  geom_point(size=7, color = 'white', shape=16) +
+  geom_point(size=7,  shape=1) +
+  geom_text(aes(label=n)) +
+  scale_fill_manual(values = pnw_palette(name="Bay", n=length(unique(primary_location_tally$variable)) ), na.value = 'grey90') + 
+  guides(fill='none')+
+  theme_bw(base_size=16) +
+  theme(axis.text.x = element_text(hjust = -0, angle = -45), 
+        axis.title.x = element_blank(), 
+        panel.grid = element_blank() 
+        
+  )
+
+primary_location_tally %>% summarise(sum_n = sum(n))
+
+message('Primary tumors spanned the biliary tree, including ',
+        primary_location_tally$n[primary_location_tally$variable == 'Intrahepatic_CCA_iCCA'],
+        ' intrahepatic, ',
+        primary_location_tally$n[primary_location_tally$variable == 'HCC-CCA'],
+        ' combined hepatocellular-cholangiocarcinoma, ',
+        primary_location_tally$n[primary_location_tally$variable == 'Perihilar_CCA_pCCA'],
+        ' perihilar, ',
+        primary_location_tally$n[primary_location_tally$variable == 'Distal_CCA_dCCA'],
+        ' distal, and ',
+        primary_location_tally$n[primary_location_tally$variable == 'Gallbladder'],
+        ' gallbladder primary tumors')
+
+```
+
+## Identify sequencing specimen
+For cases where more than one specimen underwent WGTS, we make sure the right part of the clinical story is analyzed
+
+```{r}
+
+lbr.samples <- lbr.clinic.all %>% filter( Repeat_Instrument == "Research Tissue Collection" )
+
+lbr.samples$BTC_ID <- gsub('-','_',lbr.samples$BTC_ID)
+lbr.samples$BTC_ID <- gsub('__','_',lbr.samples$BTC_ID)
+lbr.samples$BTC_ID <- gsub('\\(','',lbr.samples$BTC_ID)
+lbr.samples$BTC_ID <- gsub('\\)','',lbr.samples$BTC_ID)
+#lbr.samples$BTC_ID <- toupper(lbr.samples$BTC_ID)
+lbr.samples$BTC_ID[lbr.samples$Study_ID == 'LBR-0383'] <- 'BTC_0197'
+
+all.samples.raw <- align_df2_to_df1(df1=lbr.samples, df2=non.lbr.clinic)
+
+all.samples.raw <- all.samples.raw %>% 
+  filter(Study_ID %in% BTC_clinical.tumours$`Study ID` | Study_ID %in% BTC_clinical.tumours$Donor )
+
+length(unique(all.samples.raw$Study_ID))
+
+## most complete of several columns with same name
+sum(!is.na(all.samples.raw$Timepoint422))
+
+all.samples.raw <- all.samples.raw %>% dplyr::select(Study_ID, BTC_ID, 
+                                             Repeat_Instrument,
+                                             Date_of_tissue,
+                                             Site_of_tissue,	
+                                             Specify_other_site_of_tissue, 
+                                             Procedure_Type, 
+                                             Timepoint422, 
+                                            Specify_procedure, 
+                                            LCM_Complete
+                               ) %>% unique() 
+
+names(all.samples.raw)[names(all.samples.raw) == 'Timepoint422'] <- 'Timepoint'
+
+
+all.samples <- all.samples.raw %>% left_join(
+                                primary_location ,
+                                by=c('Study_ID'='Study_ID')
+                              ) 
+
+## remove second samples where donor has two
+all.samples %>% group_by(Study_ID) %>% tally() %>% arrange(Study_ID) %>% filter(n > 1)
+length(unique(all.samples$Study_ID))
+
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0014' & LCM_Complete == 'No'))
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0015' & Procedure_Type == 'Biopsy'))
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0017' & Timepoint == 'Not applicable'))
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0028' & is.na(Site_of_tissue)))
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0029' & LCM_Complete == 'No'))
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0029' & Procedure_Type == 'Biopsy'))
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0033' & Timepoint == 'Progression'))
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0034' & Timepoint == 'Progression'))
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0049' & LCM_Complete == 'No' )) #BTC_0049, the 2019 sample is not LCM
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0064' & Procedure_Type == 'Biopsy'))
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0071' & Procedure_Type == 'Biopsy'))
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0081' & LCM_Complete == 'No'))
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0087' & Timepoint == 'Progression'))
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0100' & LCM_Complete == 'No')) 
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0117' & is.na(Procedure_Type))) 
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0122' & Specify_procedure == 'Living donor liver transplant - Gallbladder lesion')) #both fail cellularity
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0124' & Timepoint == 'Progression')) 
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0127' & Timepoint == 'Recurrence')) 
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0142' & Site_of_tissue == 'Other')) # fail cellularity
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0152' & LCM_Complete == 'No'))
+all.samples <- all.samples %>%  filter(!(BTC_ID == 'BTC_0197' & is.na(Procedure_Type))) 
+
+all.samples <- all.samples %>%  filter(!(Study_ID == 'LBR-0082' & Timepoint == 'Progression'))
+all.samples <- all.samples %>%  filter(!(Study_ID == 'LBR-0183' & Timepoint == 'Progression'))
+all.samples <- all.samples %>%  filter(!(Study_ID == 'LBR-0208' & Procedure_Type == 'Biopsy'))
+all.samples <- all.samples %>%  filter(!(Study_ID == 'LBR-0242' & Timepoint == 'Progression'))
+all.samples <- all.samples %>%  filter(!(Study_ID == 'LBR-0297' & BTC_ID == 'BTC_0181_Bd_P'))
+
+all.samples %>% group_by(Study_ID) %>% tally() %>% arrange(desc(n)) %>% filter(n > 1)
+length(unique(all.samples$Study_ID))
+
+all.samples$Sample_Progression <- NA
+all.samples$Sample_Progression[all.samples$Procedure_Type == 'Surgical Resection'] <- 'Primary'
+all.samples$Sample_Progression[all.samples$Procedure_Type == 'Biopsy' & all.samples$Site_of_tissue %in% c('Other','Peritoneum','Lung')] <- 'Metastasis'
+all.samples$Sample_Progression[all.samples$Procedure_Type == 'Biopsy' & 
+                                 all.samples$Site_of_tissue == 'Liver' & 
+                                 all.samples$variable %in% c('Distal_CCA_dCCA','Gallbladder','Perihilar_CCA_pCCA')] <- 'Metastasis'
+
+all.samples$Sample_Progression[all.samples$Procedure_Type == 'Biopsy' & 
+                                 all.samples$Site_of_tissue == 'Liver' & 
+                                 all.samples$variable %in% c('Intrahepatic_CCA_iCCA','HCC-CCA')] <- 'Primary'
+
+
+all.samples$Site_of_tissue[is.na(all.samples$Site_of_tissue) & 
+                                    all.samples$Sample_Progression == 'Primary' & 
+                                    all.samples$variable %in% c('Intrahepatic_CCA_iCCA','HCC-CCA') ] <- 'Liver'
+
+
+all.samples$Site_of_tissue[is.na(all.samples$Site_of_tissue) & 
+                                    all.samples$Sample_Progression == 'Primary' & 
+                                    all.samples$variable == 'Gallbladder' ] <- 'Gallbladder'
+
+all.samples$Site_of_tissue[is.na(all.samples$Site_of_tissue) & 
+                                    all.samples$Sample_Progression == 'Primary' & 
+                                    all.samples$variable == 'Perihilar_CCA_pCCA' ] <- 'Hepatic Duct'
+
+all.samples$Site_of_tissue[is.na(all.samples$Site_of_tissue) & 
+                                    all.samples$Sample_Progression == 'Primary' & 
+                                    all.samples$variable == 'Distal_CCA_dCCA' ] <- 'CBD'
+
+all.samples %>% group_by(Procedure_Type, Sample_Progression, Site_of_tissue, variable) %>% 
+  tally() %>% arrange(desc(n))
+
+all.samples$Site_of_tissue[all.samples$Specify_other_site_of_tissue == "Paravertebral and Liver Biopsy"] <- 'Spine'
+all.samples$Site_of_tissue[all.samples$Specify_other_site_of_tissue %in% c("Neck - Lymph Node")] <- 'Neck'
+all.samples$Site_of_tissue[all.samples$Specify_other_site_of_tissue %in% c("Abdomen","LAPAROSCOPIC ABDOMINAL LYMPH NODE BIOPSY")] <- 'Abdomen'
+all.samples$Site_of_tissue[all.samples$Site_of_tissue == 'Peritoneum'] <- 'Abdomen'
+
+all.samples <- all.samples %>%
+  mutate(Sample_Progression = if_else(
+    startsWith(Study_ID, "BTC_9"),
+    'Primary',
+    Sample_Progression
+  ))
+
+all.samples <- all.samples %>%
+  mutate(Procedure_Type = if_else(
+    startsWith(Study_ID, "BTC_9"),
+    "Surgical Resection",
+    Procedure_Type
+  ))
+
+
+names(all.samples)[names(all.samples) == 'variable'] <- 'location'
+
+all.samples$location[all.samples$location == "Intrahepatic_CCA_iCCA"] <- 'Intrahepatic'
+all.samples$location[all.samples$location == "Perihilar_CCA_pCCA"] <- 'Perihilar'
+all.samples$location[all.samples$location == "Distal_CCA_dCCA"] <- 'Distal'
+
+split_cols <-  data.frame(str_split_fixed(all.samples$BTC_ID, "_", 3))
+all.samples$BTC_ID <- paste(split_cols$X1, split_cols$X2, sep="_")
+
+all.samples.plus <- left_join(all.samples, 
+          BTC_clinical.tumours %>% dplyr::select(Donor, Sample,`Group ID(LCM/non-LCM)`, `Sample Source(FFPE, FF)`, cellularity,rna, previous, EHR),
+          by=c('BTC_ID'='Donor'))
+
+names(all.samples.plus)[names(all.samples.plus) == 'Group ID(LCM/non-LCM)'] <- 'LCM'
+names(all.samples.plus)[names(all.samples.plus) == 'Sample Source(FFPE, FF)'] <- 'FF'
+
+  
+all.samples$location <- factor(all.samples$location, levels = c('HCC-CCA','Intrahepatic', 'Perihilar', 'Gallbladder','Distal'))
+
+```
+
+## TNM
+
+
+```{r}
+
+more.tumour.ft <- all.clinic %>% dplyr::select(
+  Study_ID, Histology, Other_Histology,	
+  
+  Grade69,	Grade666, 
+  
+  Other_Grade,	
+    T_at_diagnosis,	N_at_diagnosis,	M_at_diagnosis,
+    Overall_Stage_at_Diagnosis, Greatest_dimension_centimeters,
+    Tumour_growth_pattern)
+
+names(more.tumour.ft)[names(more.tumour.ft) == 'Grade69'] <- 'Grade_at_diagnosis'
+names(more.tumour.ft)[names(more.tumour.ft) == 'Grade666'] <- 'Grade_at_surgery'
+
+na_values <- c('', 'Unknown', 'Not available', 'Not stated', 'N/A', 'Other')
+
+more.tumour.ft <- more.tumour.ft %>%
+  mutate(across(everything(), ~replace(., . %in% na_values, NA)))
+
+more.tumour.ft <-  left_join(more.tumour.ft, all.samples.plus) 
+
+if(overwrite.files){
+  write.table( more.tumour.ft,  
+               file = file.path(data.dir,"/results/samples.info.txt"), row.names = FALSE, quote = FALSE, sep = "\t")
+}
+
+nodes.tally <- more.tumour.ft %>% group_by(N_at_diagnosis, location) %>% tally()
+
+nodes.tally$node_long <- NA
+nodes.tally$node_long[nodes.tally$N_at_diagnosis == 'N0'] <- 'N0: No Nodes'
+nodes.tally$node_long[nodes.tally$N_at_diagnosis == 'N1'] <- 'N1: Few Nodes'
+nodes.tally$node_long[nodes.tally$N_at_diagnosis == 'N2'] <- 'N2: Many Nodes'
+nodes.tally$node_long[nodes.tally$N_at_diagnosis == 'NX'] <- 'NX: Nodes Unevaluable'
+
+node.n.plot <- 
+  ggplot(nodes.tally, aes(x=location, y=n)) + 
+    geom_bar(stat='identity',aes(fill=node_long)) +
+    scale_fill_manual(values = pnw_palette(name="Starfish", n=length(unique(nodes.tally$location)) ), na.value = 'grey90') + 
+    theme_bw(base_size=10) +
+  labs(y='# of cases') +
+    theme(axis.text.x = element_blank(), 
+          axis.title.x = element_blank(), 
+          panel.grid = element_blank(),
+          legend.title = element_blank() ,
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+          
+    )+
+  guides(
+    fill = guide_legend(override.aes = list(size = 2))
+  ) +
+  theme(
+    legend.text = element_text(size = 10),
+
+    legend.key.size = unit(0.2, "cm")
+  )
+
+sum(nodes.tally$n)
+
+more.tumour.ft$M_at_diagnosis[more.tumour.ft$Sample_Progression == "Metastasis"] <- 'M1'
+
+cM.tally <- more.tumour.ft %>% group_by(M_at_diagnosis, location) %>% tally()
+
+cM.tally$met_long <- NA
+cM.tally$met_long[cM.tally$M_at_diagnosis == 'M0'] <- 'M0: No Metastasis'
+cM.tally$met_long[cM.tally$M_at_diagnosis == 'M1'] <- 'M1: Metastasis Detected'
+
+met.n.plot <- 
+ggplot(cM.tally , aes(x=location, y=n)) + 
+  geom_bar(stat='identity',aes(fill=met_long)) +
+  theme_bw(base_size=10) +
+  theme(axis.text.x = element_text(hjust = -0, angle = -45), 
+        axis.title.x = element_blank(), 
+        panel.grid = element_blank() ,
+        legend.title = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        
+  )+ labs(y='# of cases') +
+  
+  scale_fill_manual(values = pnw_palette(name="Spring", n=length(unique(cM.tally$met_long)) ), na.value = 'grey90') +
+  guides(
+    fill = guide_legend(override.aes = list(size = 2))
+  ) +
+  theme(
+    legend.text = element_text(size = 10),
+
+    legend.key.size = unit(0.2, "cm")
+  )
+
+NM_plot <- 
+plot_grid(node.n.plot,NULL, met.n.plot,
+          ncol = 1, align = 'hv', axis = "rlbt",
+          rel_heights = c(0.5,-0.15, 0.5))
+
+ggsave(paste0(data.dir, "/results/fig/FIGS1c.NM_plot.svg"),plot =
+         NM_plot
+, device = "svg",width = 100, height = 85, units = 'mm' )
+
+NM_plot
+
+message('Metastases were detected in ',sum(cM.tally$n[cM.tally$M_at_diagnosis == 'M1'], na.rm = T),' patients (',
+        round(sum(cM.tally$n[cM.tally$M_at_diagnosis == 'M1'], na.rm = T)/sum(cM.tally$n[cM.tally$M_at_diagnosis %in% c('M0','M1')], na.rm = T),2)*100,
+        '%)')
+
+```
+
+## Where are the metastatic samples from?
+
+```{r}
+
+all.samples %>% group_by(Sample_Progression) %>%  tally()
+
+met.tally <- all.samples %>% filter(Sample_Progression == 'Metastasis') %>% 
+  group_by(location, Site_of_tissue, Specify_other_site_of_tissue) %>% tally() #%>% arrange(desc(n))
+
+met.tally %>% dplyr::select(location, Site_of_tissue, n) %>% data.frame()
+met.tally.df <- met.tally %>% dplyr::select(location, Site_of_tissue, n) %>% data.frame()
+names(met.tally.df) <- c('location','metastasis','frequency')
+
+locations <- met.tally.df %>%  distinct(location) %>% arrange(desc(location)) %>% mutate(x_org = 1, y_org = seq(1, n()))
+metastases <- met.tally.df %>% distinct(metastasis) %>% mutate(x_loc = 3, y_loc = seq(1, n()))
+
+sum(met.tally.df$frequency)
+
+# Merge positions
+plot_data <- met.tally.df %>%
+  left_join(locations, by = "location") %>%
+  left_join(metastases, by = "metastasis")
+
+plot_data <- plot_data %>% group_by(location, x_org, y_org) %>% mutate(n.org = sum(frequency))
+plot_data <- plot_data %>% group_by(metastasis) %>% mutate(n.met = sum(frequency))
+
+met.locations.plot <- 
+ggplot() +
+  
+  geom_text(data = metastases, aes(x = x_loc, y = y_loc, label = metastasis), hjust = -0.2, size=4) +
+  geom_curve(data = plot_data,
+             curvature = -0.2,
+               aes(x = x_org, y = y_org, xend = x_loc, yend = y_loc, size = frequency),
+              show.legend = FALSE
+               #arrow = arrow(length = unit(3, "mm")),
+              ) +
+  
+  geom_point(data = locations, aes(x = x_org, y = y_org), size = 12, color='white') +
+  geom_text(data = plot_data, aes(x = x_org, y = y_org, label = n.org),  size=4 ) +
+  
+  geom_point(data = locations, aes(x = x_org, y = y_org, color=location), size = 12, shape=1, stroke = 2) +
+  geom_point(data = plot_data, aes(x = x_loc, y = y_loc, size = n.met), color='black') +
+  
+  
+  scale_color_manual(values = c("Perihilar" = "#e59d54ff",
+                                "Intrahepatic" = "#fbcc7aff",
+                                "Distal" = "#ba7a44ff",
+                                "Gallbladder" = "#855b40ff")) +  
+  scale_size(range = c(0.5, 3)) +
+  theme_void(base_size=10) +
+  xlim(-1, 5)+
+  guides(color='none', size='none') +
+  coord_cartesian(clip = "off")+
+  scale_y_continuous(expand = expansion(mult = 0.15))
+
+# Plot with arrows
+met.locations.plot
+
+ggsave(paste0(data.dir, "/results/fig/FIGS1d.met.locations.svg"),plot =
+         met.locations.plot
+, device = "svg",width = 100, height = 85, units = 'mm' )
+
+message(sum(met.tally.df$frequency),
+        ' specimens were taken from metastases, including liver biopsies from ',
+        sum(met.tally.df$frequency[met.tally.df$location != 'Intrahepatic' & met.tally.df$metastasis == 'Liver']),
+        ' extrahepatic cancers')
+
+```
+
+
