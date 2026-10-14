@@ -9,13 +9,8 @@ suppressPackageStartupMessages({
 
   library(data.table)
   library(dplyr)
-  library(tidyr)
-  library(stringr)
   library(ggplot2)
-  library(survival)
   library(survMisc)
-  library(survminer)
-  library(ggupset)
   
 })
 

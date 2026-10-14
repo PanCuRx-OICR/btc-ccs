@@ -1,0 +1,83 @@
+name: btc-ccs-analysis
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-base >=4.5,<4.6   # matches bioconda's current CNTools build
+  - r-remotes
+  # core (also in environment.yml)
+  - r-data.table
+  - r-optparse
+  - r-stringr
+  - r-dplyr
+  - r-tibble
+  - bioconductor-cntools
+  # tidyverse / plotting
+  - r-tidyr
+  - r-purrr
+  - r-reshape2
+  - r-readxl
+  - r-openxlsx
+  - r-scales
+  - r-ggplot2
+  - r-cowplot
+  - r-ggrepel
+  - r-ggforce
+  - r-ggraph
+  - r-tidygraph
+  - r-igraph
+  - r-ggalluvial
+  - r-ggupset
+  - r-ggbeeswarm
+  - r-gghalves
+  - r-ggsurvfit
+  - r-pheatmap
+  - r-gtsummary
+  - r-broom
+  # stats / clustering / survival
+  - r-survival
+  - r-survminer
+  - r-survmisc
+  - r-vegan
+  - r-factominer
+  - r-rtsne
+  - r-cluster
+  - r-mclust
+  - r-mcl
+  - r-matrix
+  - r-desctools
+  - r-car
+  - r-logistf
+  - r-proc
+  - r-minpack.lm
+  - r-nmf
+  - r-lsa
+  - r-rlist
+  # single-cell
+  - r-seurat
+  - r-seuratobject
+  - r-hdf5r
+  - bioconductor-aucell
+  - bioconductor-infercnv
+  # expression / enrichment
+  - bioconductor-deseq2
+  - bioconductor-limma
+  - bioconductor-lumi
+  - bioconductor-minfi
+  - bioconductor-sva
+  - bioconductor-switchbox
+  - bioconductor-clusterprofiler
+  - bioconductor-enrichplot
+  - bioconductor-org.hs.eg.db
+  - bioconductor-illuminahumanv4.db
+  - bioconductor-illuminahumanmethylation450kanno.ilmn12.hg19
+  - bioconductor-illuminahumanmethylation450kmanifest
+  - r-msigdbr
+  - r-gprofiler2
+  # genomics
+  - bioconductor-genomicranges
+  - bioconductor-rtracklayer
+  - bioconductor-bsgenome
+  - bioconductor-bsgenome.hsapiens.ucsc.hg38
+  - bioconductor-ggbio
+  - bioconductor-qvalue

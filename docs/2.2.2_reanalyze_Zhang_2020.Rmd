@@ -19,7 +19,6 @@ suppressPackageStartupMessages({
   library(ggrepel)
   library(PNWColors)
   library(cowplot)
-  library(gghalves)
   library(stringr)
   library(tidyr)
 })

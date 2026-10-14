@@ -15,7 +15,6 @@ suppressPackageStartupMessages({
   library(tibble)
   library(reshape2)
   library(pvclust)
-  library(msigdbr)
   library(gprofiler2)
   library(org.Hs.eg.db)
   library(clusterProfiler)

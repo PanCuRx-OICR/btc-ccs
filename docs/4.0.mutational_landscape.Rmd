@@ -9,16 +9,11 @@ suppressPackageStartupMessages({
 
   library(data.table)
   library(ggplot2)
-  library(mclust)
   library(dplyr)
   library(ggrepel)
   library(cowplot)
-  library(survival)
-  library(ggsurvfit)
   library(PNWColors)
   library(tidyr)
-  library(EnvStats) #qqPlot
-  library(PNWColors)
   
 })
 

@@ -11,12 +11,9 @@ suppressPackageStartupMessages({
   library(ggplot2)
   library(dplyr)
   library(tidyr)
-  library(ggrepel)
   library(broom) #tidy
   library(logistf) #Firth's bias-reduced logistic regressions
   library(vegan) # shannon index
-  library(stringr )
-  library(ggupset)
   library(PNWColors)
   library(cowplot)
   library(car)

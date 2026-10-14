@@ -11,8 +11,6 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)
   library(stringr)
-  library(readxl)
-  library(ggupset)
   library(PNWColors)
   library(ggsankey)
   library(gtsummary)

@@ -26,9 +26,7 @@ suppressPackageStartupMessages({
   library(data.table)
   library(dplyr)
   library(reshape2)
-  library(circlize)
   library(tidyr)
-  library(PNWColors)
   library(ggrepel)
   
 }))

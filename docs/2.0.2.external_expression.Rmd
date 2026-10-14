@@ -12,10 +12,7 @@ suppressPackageStartupMessages({
   library(data.table)
   library(readxl)
   library(dplyr)
-  library(tidyr)
-  library(stringr)
   
-  library(lumi)
   library(limma)
   library(minfi)
   library(IlluminaHumanMethylation450kmanifest)
@@ -276,7 +273,6 @@ ggsave(file.path(data.dir,"/results/fig/FIG3B.methyl_rda.stack.svg"),plot =
 
 ```{r}
 
-library(readxl)
 library(ggalluvial)
 
 jusakul.S3A <- read_excel(file.path(data.dir,

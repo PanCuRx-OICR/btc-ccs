@@ -19,7 +19,6 @@ suppressPackageStartupMessages({
   library(FactoMineR)
   library(pROC)
   library(ggplot2)
-  library(gghalves)
 }))
 
 `%ni%` <- Negate(`%in%`)

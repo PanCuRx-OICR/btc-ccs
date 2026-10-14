@@ -26,13 +26,38 @@ if ! r_version="$(Rscript --version 2>&1)"; then
 fi
 pass "$(echo "$r_version" | head -1)"
 
+lib_failed=0
 for pkg in data.table optparse stringr dplyr tibble CNTools; do
   if Rscript -e "suppressMessages(library($pkg))" >/dev/null 2>&1; then
     pass "R package $pkg"
   else
     fail "R package $pkg could not be loaded"
+    lib_failed=1
   fi
 done
+
+# Packages that fail to load are usually found in a library outside the env (a system R,
+# ~/.Renviron or R_LIBS_USER), often built for a different CPU architecture.
+if [ "$lib_failed" = 1 ]; then
+  lib_paths="$(Rscript -e 'cat(.libPaths(), sep = "\n")' 2>/dev/null)"
+  env_root="${CONDA_PREFIX:-}"
+  outside=""
+  if [ -n "$env_root" ]; then
+    outside="$(echo "$lib_paths" | grep -v -F "$env_root" || true)"
+  fi
+  if [ -n "$outside" ]; then
+    echo
+    echo "  R is also reading libraries from outside the conda environment:"
+    echo "$outside" | sed 's/^/          /'
+    echo "  They can shadow the environment's packages (e.g. arm64 builds loaded into an Intel R)."
+    echo "  To isolate the environment from them, run:"
+    echo "          conda env config vars set -p \"$CONDA_PREFIX\" R_ENVIRON_USER=/dev/null R_PROFILE_USER=/dev/null R_LIBS_USER=/dev/null R_LIBS="
+    echo "          conda deactivate && conda activate <env-name>"
+    echo "          conda install -p \"$CONDA_PREFIX\" -c conda-forge -c bioconda r-data.table r-stringr r-dplyr r-tibble bioconductor-cntools"
+    echo "  then rerun ./test_install.sh. See 'Troubleshooting' in the README."
+    echo
+  fi
+fi
 
 run_classifier() {  # name, expected output, script + args...
   local name=$1 expected=$2; shift 2

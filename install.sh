@@ -1,10 +1,20 @@
 #!/usr/bin/env bash
 # Create the btc-ccs conda environment and check that it works.
-# Usage: ./install.sh [env-name]   (default env name: btc-ccs)
+# Usage: ./install.sh [--analysis] [env-name]
+#   default:    env 'btc-ccs' (classifiers only, from environment.yml)
+#   --analysis: env 'btc-ccs-analysis' with everything the docs/*.Rmd need
+#               (environment-analysis.yml + install_analysis_extras.R)
 set -euo pipefail
 
+analysis=0
+if [ "${1:-}" = "--analysis" ]; then analysis=1; shift; fi
+
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-env_name="${1:-btc-ccs}"
+if [ "$analysis" = 1 ]; then
+  env_name="${1:-btc-ccs-analysis}"; env_file=environment-analysis.yml
+else
+  env_name="${1:-btc-ccs}"; env_file=environment.yml
+fi
 
 # prefer mamba (much faster solves), fall back to conda
 if command -v mamba >/dev/null 2>&1; then
@@ -55,11 +65,22 @@ if [ -e "$env_prefix" ]; then
 fi
 
 echo "Creating conda environment '$env_name' with $conda_cmd"
-"$conda_cmd" env create -p "$env_prefix" -f "$repo_dir/environment.yml"
+"$conda_cmd" env create -p "$env_prefix" -f "$repo_dir/$env_file"
 
 # keep later installs into this env on the same platform
 if [ "${CONDA_SUBDIR:-}" = "osx-64" ]; then
   conda run -p "$env_prefix" conda config --env --set subdir osx-64
+fi
+
+# Isolate the env's R from any R set up elsewhere on the machine (~/.Renviron, ~/.Rprofile,
+# R_LIBS_USER, a system R in /Library/Frameworks/R.framework). Otherwise its libraries can
+# shadow the env's, e.g. arm64 packages loaded into the Intel R ("incompatible architecture").
+conda env config vars set -p "$env_prefix" \
+  R_ENVIRON_USER=/dev/null R_PROFILE_USER=/dev/null R_LIBS_USER=/dev/null R_LIBS= >/dev/null
+
+if [ "$analysis" = 1 ]; then
+  echo "Installing CRAN/GitHub-only packages"
+  conda run --no-capture-output -p "$env_prefix" Rscript "$repo_dir/install_analysis_extras.R"
 fi
 
 echo

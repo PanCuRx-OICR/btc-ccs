@@ -9,11 +9,9 @@ Here, we analytically compare the variance explained by anatomical location and 
 suppressPackageStartupMessages({
   library(data.table)
   library(dplyr)
-  library(tidyr)
   library(DESeq2)
   library(FactoMineR)
   library(vegan)
-  library(cowplot)
   library(ggrepel)
   library(ggplot2)
   library(PNWColors)

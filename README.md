@@ -47,6 +47,18 @@ bundled examples and checks the results against the expected outputs. On
 Apple Silicon Macs it builds an Intel environment that runs under
 Rosetta 2, because Bioconductor's CNTools has no native conda build there.
 
+To also run the analysis notebooks in [`docs/`](docs), build the larger
+environment instead (many more packages; takes a while):
+
+```bash
+./install.sh --analysis  # creates the 'btc-ccs-analysis' env
+conda activate btc-ccs-analysis
+```
+
+It uses [`environment-analysis.yml`](environment-analysis.yml), plus
+[`install_analysis_extras.R`](install_analysis_extras.R) for packages that
+come from GitHub or CRAN only (PNWColors, fishHook, gTrack, dndscv, ...).
+
 <details>
 <summary>Without conda</summary>
 
@@ -60,6 +72,25 @@ BiocManager::install("CNTools")
 Then check the installation with `./test_install.sh`. eCCS alone only needs
 `data.table`, `optparse` and `stringr`.
 </details>
+
+#### Troubleshooting
+
+**`R package ... could not be loaded` / `incompatible architecture (have 'arm64', need 'x86_64')`**
+The environment's R is picking up libraries from another R on your machine
+(for example the CRAN R in `/Library/Frameworks/R.framework`, or a path set
+in `~/.Renviron` or `R_LIBS_USER`). `install.sh` now isolates the environment
+from these automatically; for an environment created earlier, do it by hand
+(replace `btc-ccs` with your environment name):
+
+```bash
+conda env config vars set -n btc-ccs R_ENVIRON_USER=/dev/null \
+  R_PROFILE_USER=/dev/null R_LIBS_USER=/dev/null R_LIBS=
+conda deactivate && conda activate btc-ccs
+Rscript -e 'print(.libPaths()); R.version$arch'   # only paths inside the env, arch x86_64 under Rosetta
+conda install -n btc-ccs -c conda-forge -c bioconda \
+  r-data.table r-stringr r-dplyr r-tibble bioconductor-cntools
+./test_install.sh
+```
 
 ### eCCS: expression subtype (RNA)
 

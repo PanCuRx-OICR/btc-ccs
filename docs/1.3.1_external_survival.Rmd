@@ -13,7 +13,6 @@ suppressPackageStartupMessages({
   library(stringr)
   library(tibble)
   library(ggplot2)
-  library(ggrepel)
   library(PNWColors)
   library(scales)
   library(survival)
