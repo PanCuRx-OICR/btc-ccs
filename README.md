@@ -37,15 +37,13 @@ With [conda](https://github.com/conda-forge/miniforge) (recommended):
 ```bash
 git clone https://github.com/PanCuRx-OICR/btc-ccs.git
 cd btc-ccs
-./install.sh             # creates the 'btc-ccs' env and tests it
+./install.sh
 conda activate btc-ccs
 ```
 
 `install.sh` builds the environment from [`environment.yml`](environment.yml),
 then runs [`test_install.sh`](test_install.sh). The test classifies the
-bundled examples and checks the results against the expected outputs. On
-Apple Silicon Macs it builds an Intel environment that runs under
-Rosetta 2, because Bioconductor's CNTools has no native conda build there.
+bundled examples and checks the results against the expected outputs. 
 
 To also run the analysis notebooks in [`docs/`](docs), build the larger
 environment instead (many more packages; takes a while):
@@ -73,7 +71,8 @@ Then check the installation with `./test_install.sh`. eCCS alone only needs
 `data.table`, `optparse` and `stringr`.
 </details>
 
-#### Troubleshooting
+<details>
+<summary>Troubleshooting</summary>
 
 **`R package ... could not be loaded` / `incompatible architecture (have 'arm64', need 'x86_64')`**
 The environment's R is picking up libraries from another R on your machine
@@ -91,6 +90,7 @@ conda install -n btc-ccs -c conda-forge -c bioconda \
   r-data.table r-stringr r-dplyr r-tibble bioconductor-cntools
 ./test_install.sh
 ```
+</details>
 
 ### eCCS: expression subtype (RNA)
 
