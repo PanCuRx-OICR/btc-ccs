@@ -45,18 +45,6 @@ conda activate btc-ccs
 then runs [`test_install.sh`](test_install.sh). The test classifies the
 bundled examples and checks the results against the expected outputs. 
 
-To also run the analysis notebooks in [`docs/`](docs), build the larger
-environment instead (many more packages; takes a while):
-
-```bash
-./install.sh --analysis  # creates the 'btc-ccs-analysis' env
-conda activate btc-ccs-analysis
-```
-
-It uses [`environment-analysis.yml`](environment-analysis.yml), plus
-[`install_analysis_extras.R`](install_analysis_extras.R) for packages that
-come from GitHub or CRAN only (PNWColors, fishHook, gTrack, dndscv, ...).
-
 <details>
 <summary>Without conda</summary>
 
@@ -177,6 +165,18 @@ the **[project site](https://pancurx-oicr.github.io/btc-ccs/)**:
 The `.Rmd` sources and their rendered `.html` pages are in [`docs/`](docs).
 
 ### Start from raw data
+
+To run the analysis notebooks in [`docs/`](docs), build the larger
+environment (many packages; takes a while):
+
+```bash
+./install.sh --analysis
+conda activate btc-ccs-analysis
+```
+
+It uses [`environment-analysis.yml`](environment-analysis.yml), plus
+[`install_analysis_extras.R`](install_analysis_extras.R) for packages that
+come from GitHub or CRAN only (PNWColors, fishHook, gTrack, dndscv, ...).
 
 Raw FASTQ files are on the European Genome-phenome Archive under
 [EGAS50000000972](https://ega-archive.org/studies/EGAS50000000972). Access
