@@ -7,13 +7,13 @@ Let's start the good stuff. Here, we run through previously published BTC transc
 First, we import the data and filter for fresh frozen cases with high quality, and normalize with DESEQ.
 
 ```{r}
-#devtools::install_github("peterawe/CMScaller")
 
 suppressPackageStartupMessages({
   library(data.table)
   library(dplyr)
   library(CMScaller)
   library(DESeq2)
+  library(limma)
 })
 
 packageVersion("CMScaller")

@@ -5,8 +5,6 @@ Here, we return to our external datasets from [Dong et al. 2022](https://doi.org
 
 ```{r}
 
-#BiocManager::install("lumi")
-
 suppressPackageStartupMessages({
 
   library(data.table)
@@ -58,7 +56,7 @@ We take the methylation array data from Jusakul et al and identify differentiall
 
 ```{r}
 
-jusakul_methylation.meta <-  fread(file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/GSE89803_RAW/jusakul_methylation.txt'))
+jusakul_methylation.meta <-  fread(file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/jusakul_methylation.txt'))
 
 jusakul_methylation.meta$barcode <- 
   paste(
@@ -87,7 +85,7 @@ jusakul_methylation.meta <- full_join(jusakul_methylation.meta,
 # Set the path to your .idat files
 idat_dir <- file.path(data.dir,'/source_data/cbioportal/chol_icgc_2017/GSE89803_RAW')
 
-unzip.files =F
+unzip.files = F
 if(unzip.files){
   gz_files <- list.files(idat_dir, pattern = "\\.idat\\.gz$", full.names = TRUE)
   
@@ -433,7 +431,7 @@ anno <- getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)
 anno_df <- as.data.frame(anno)
 
 #hgdownload.soe.ucsc.edu/goldenPath/hg19/liftOver/hg19ToHg38.over.chain.gz
-#chain <- import.chain("~/Downloads/hg19ToHg38.over.chain")  
+chain <- import.chain(file.path(data.dir,'source_data',"hg19ToHg38.over.chain") )
 gr_hg19 <- GRanges(seqnames = anno_df$chr, ranges = IRanges(anno_df$pos, width = 1), IlmnID = anno_df$Name)
 
 gr_hg38 <- liftOver(gr_hg19, chain)

@@ -486,8 +486,8 @@ my.plot <- plot_grid(
     ) + theme(axis.text.x = element_blank(),
               
               axis.text.y = element_text(size = 5,face = "italic"),
-              axis.ticks.x = element_blank())+
-    guides(fill='none')
+              axis.ticks.x = element_blank())+ labs(fill='z-score')
+   # guides(fill='none')
   
   ,NULL, 
   

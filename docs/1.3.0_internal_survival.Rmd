@@ -12,7 +12,7 @@ suppressPackageStartupMessages({
   library(survMisc)
   library(survminer)
   library(ggplot2)
-    library(gtsummary)
+  library(gtsummary)
 })
 
 
@@ -97,13 +97,13 @@ t1.res <- t1.data %>%
     statistic = list(all_continuous() ~ "{mean} ({sd})"),
     digits = all_continuous() ~ 1
   ) %>%
-  add_overall() %>%
-  add_p(
-    test = list(
-      all_continuous() ~ "wilcox.test",
-      all_categorical() ~ "fisher.test"
-    )
-  ) 
+  add_overall() #%>%
+  #add_p(
+  #  test = list(
+  #    all_continuous() ~ "wilcox.test",
+  #    all_categorical() ~ "fisher.test"
+  #  )
+  #) 
 
 t1.res
 t1.df <- as_tibble(t1.res)
@@ -138,13 +138,13 @@ cohen <- t1.data.complete %>%
   add_overall() %>%
   add_difference(
     test = all_continuous() ~ "cohens_d"
-  )%>%
-  add_p(
-    test = list(
-      all_continuous() ~ "wilcox.test",
-      all_categorical() ~ "fisher.test"
-    )
-  ) 
+  ) #%>%
+  #add_p(
+  #  test = list(
+  #    all_continuous() ~ "wilcox.test",
+  #    all_categorical() ~ "fisher.test"
+  #  )
+  #) 
 
 cohen
 
