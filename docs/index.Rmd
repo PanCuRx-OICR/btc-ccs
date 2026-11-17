@@ -18,7 +18,7 @@ For single-sample CCS classifiers, check-out the [github repo](https://github.co
 
 ### Part 0: Cohort setup
 - [Step 0.1](0.1_tumors.html) review tumor specimens
-- [Step 0.2](0.1_timelines.html) review case histories
+- [Step 0.2](0.2_timelines.html) review case histories
 
 ### Part 1: Signature network
 - [Step 1.1](1.1.classify_data.html) classify samples into existing transcriptomic classes
