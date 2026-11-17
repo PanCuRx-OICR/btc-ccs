@@ -5,7 +5,7 @@
   <a href="https://pancurx-oicr.github.io/btc-ccs/"><img alt="Analysis walkthrough" src="https://img.shields.io/badge/walkthrough-R%20Markdown-2c7fb8"></a>
   <img alt="R" src="https://img.shields.io/badge/R-%E2%89%A54.0-276DC3?logo=r&logoColor=white">
   <a href="https://ega-archive.org/studies/EGAS50000000972"><img alt="EGA: EGAS50000000972" src="https://img.shields.io/badge/EGA-EGAS50000000972-555"></a>
-  <a href="LICENSE"><img alt="License: all rights reserved" src="https://img.shields.io/badge/license-all%20rights%20reserved-lightgrey"></a>
+  <a href="#license"><img alt="Classifier license: PolyForm Strict 1.0.0" src="https://img.shields.io/badge/classifier%20license-PolyForm%20Strict%201.0.0-lightgrey"></a>
 </p>
 
 This repository accompanies the manuscript
@@ -188,14 +188,23 @@ the other shell scripts in `bin/`.
 
 ## Citation
 
-If you use the classifiers or code, please cite the manuscript: 
+If you use the classifiers or code, please cite the manuscript:
 
 Beaudry F.E.G., Yendi D., Arshinoff D.L.A., Light N., Perrotti S., Winter E., Cristant L.R., Xu J., Wilson J.M., Dodd A.J., Bucur R.C., Chen E.X., Elimova E., Wong R.K.S., Mesci A., Hosni A., Ghanekar A., Jang R., Shwaartz C.G., Reichman T.W., Moulton C.A., Sanz-Garcia E., O'Kane G.M., Tsang E.S., Wang X., McGilvray I.D., Gallinger A., Pugh T.J., Sapisochin G., Vogel A., Knox J.J., Notta F., Grant R.C. 2026. [Integrated Whole-Genome and Transcriptome Sequencing Reveals Divergent Evolutionary Processes Across Biliary Tract Cancer Subtypes.](https://doi.org/10.1158/0008-5472.CAN-26-1137) *Cancer Research*.
 
 ## License
 
-Copyright © 2026 Felix Beaudry. All rights reserved.
+Copyright © 2026 Felix Beaudry. This repository has two sets of terms; the
+full text is in [LICENSE](LICENSE).
 
-This is unpublished, proprietary work, provided **for viewing only**. No
-part of it may be copied, modified, distributed or used without prior
-written permission from the author. See [LICENSE](LICENSE).
+**The classifiers: free for non-commercial use, unmodified.** The eCCS and
+gCCS classifiers are licensed under the
+[PolyForm Strict License 1.0.0](https://polyformproject.org/licenses/strict/1.0.0).
+
+**Everything else: viewable, all rights reserved.** The analysis code, the
+walkthroughs in `docs/` and the other files are shared so readers can see and
+check how the results in the manuscript were produced. They may not be
+copied, modified, distributed or used without prior written permission.
+
+The manuscript itself is © the American Association for Cancer Research and
+is not covered by these terms.

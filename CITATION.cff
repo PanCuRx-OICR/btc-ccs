@@ -1,0 +1,86 @@
+cff-version: 1.2.0
+message: "If you use the BTC-CCS classifiers, please cite the manuscript below."
+title: "BTC-CCS: consensus cancer subtypes for biliary tract cancer"
+type: software
+repository-code: "https://github.com/PanCuRx-OICR/btc-ccs"
+url: "https://pancurx-oicr.github.io/btc-ccs/"
+# The classifiers are PolyForm Strict 1.0.0; the rest of the repository is
+# all rights reserved. See LICENSE.
+license: PolyForm-Strict-1.0.0
+authors:
+  - family-names: Beaudry
+    given-names: F. E. G.
+preferred-citation:
+  type: article
+  title: "Integrated Whole-Genome and Transcriptome Sequencing Reveals Divergent Evolutionary Processes Across Biliary Tract Cancer Subtypes"
+  journal: "Cancer Research"
+  year: 2026
+  doi: "10.1158/0008-5472.CAN-26-1137"
+  url: "https://doi.org/10.1158/0008-5472.CAN-26-1137"
+  authors:
+    - family-names: Beaudry
+      given-names: F. E. G.
+    - family-names: Yendi
+      given-names: D.
+    - family-names: Arshinoff
+      given-names: D. L. A.
+    - family-names: Light
+      given-names: N.
+    - family-names: Perrotti
+      given-names: S.
+    - family-names: Winter
+      given-names: E.
+    - family-names: Cristant
+      given-names: L. R.
+    - family-names: Xu
+      given-names: J.
+    - family-names: Wilson
+      given-names: J. M.
+    - family-names: Dodd
+      given-names: A. J.
+    - family-names: Bucur
+      given-names: R. C.
+    - family-names: Chen
+      given-names: E. X.
+    - family-names: Elimova
+      given-names: E.
+    - family-names: Wong
+      given-names: R. K. S.
+    - family-names: Mesci
+      given-names: A.
+    - family-names: Hosni
+      given-names: A.
+    - family-names: Ghanekar
+      given-names: A.
+    - family-names: Jang
+      given-names: R.
+    - family-names: Shwaartz
+      given-names: C. G.
+    - family-names: Reichman
+      given-names: T. W.
+    - family-names: Moulton
+      given-names: C. A.
+    - family-names: Sanz-Garcia
+      given-names: E.
+    - family-names: "O'Kane"
+      given-names: G. M.
+    - family-names: Tsang
+      given-names: E. S.
+    - family-names: Wang
+      given-names: X.
+    - family-names: McGilvray
+      given-names: I. D.
+    - family-names: Gallinger
+      given-names: A.
+    - family-names: Pugh
+      given-names: T. J.
+    - family-names: Sapisochin
+      given-names: G.
+    - family-names: Vogel
+      given-names: A.
+    - family-names: Knox
+      given-names: J. J.
+    - family-names: Notta
+      given-names: F.
+    - family-names: Grant
+      given-names: R. C.
