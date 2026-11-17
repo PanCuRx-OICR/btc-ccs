@@ -7,11 +7,11 @@ output:
 
 ## Overview
 
-This page provides rendered HTML outputs from r-markdown of the analyses for [this pre-print](https://www.biorxiv.org/content/10.64898/2025.12.12.693962v3). 
+This page provides rendered HTML outputs from r-markdown of the analyses for [this manuscript](https://doi.org/10.1158/0008-5472.CAN-26-1137); pre-publication versions of the manuscript can be found on [biorxiv](https://www.biorxiv.org/content/10.64898/2025.12.12.693962v4). 
 
 For single-sample CCS classifiers, check-out the [github repo](https://github.com/PanCuRx-OICR/btc-ccs), which also has all code and supporting functions for this page.
 
-⚠️ **Pre-publication material. All rights reserved.**
+⚠️ **Published material. All rights reserved.**
 
 ***
 ## Code Walkthrough

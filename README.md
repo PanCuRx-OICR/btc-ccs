@@ -2,7 +2,6 @@
 <p align="center"><b>Consensus cancer subtypes for biliary tract cancer</b></p>
 
 <p align="center">
-  <a href="https://www.biorxiv.org/content/10.64898/2025.12.12.693962v3"><img alt="bioRxiv preprint" src="https://img.shields.io/badge/preprint-bioRxiv-b31b1b"></a>
   <a href="https://pancurx-oicr.github.io/btc-ccs/"><img alt="Analysis walkthrough" src="https://img.shields.io/badge/walkthrough-R%20Markdown-2c7fb8"></a>
   <img alt="R" src="https://img.shields.io/badge/R-%E2%89%A54.0-276DC3?logo=r&logoColor=white">
   <a href="https://ega-archive.org/studies/EGAS50000000972"><img alt="EGA: EGAS50000000972" src="https://img.shields.io/badge/EGA-EGAS50000000972-555"></a>
@@ -10,9 +9,9 @@
 </p>
 
 This repository accompanies the manuscript
-**"Integrated whole-genome and transcriptome sequencing reveals divergent
-evolutionary processes across biliary tract cancer subtypes"** (under review;
-[preprint on bioRxiv](https://www.biorxiv.org/content/10.64898/2025.12.12.693962v3)).
+[**"Integrated whole-genome and transcriptome sequencing reveals divergent
+evolutionary processes across biliary tract cancer subtypes"**](https://doi.org/10.1158/0008-5472.CAN-26-1137) in *Cancer Research*; preprint versions of the manuscript can be found 
+[on bioRxiv](https://www.biorxiv.org/content/10.64898/2025.12.12.693962v4).
 
 It contains two things:
 
@@ -189,9 +188,9 @@ the other shell scripts in `bin/`.
 
 ## Citation
 
-If you use the classifiers or code, please cite the manuscript. Until it is
-published, cite the
-[bioRxiv preprint](https://www.biorxiv.org/content/10.64898/2025.12.12.693962v3).
+If you use the classifiers or code, please cite the manuscript: 
+
+Beaudry F.E.G., Yendi D., Arshinoff D.L.A., Light N., Perrotti S., Winter E., Cristant L.R., Xu J., Wilson J.M., Dodd A.J., Bucur R.C., Chen E.X., Elimova E., Wong R.K.S., Mesci A., Hosni A., Ghanekar A., Jang R., Shwaartz C.G., Reichman T.W., Moulton C.A., Sanz-Garcia E., O'Kane G.M., Tsang E.S., Wang X., McGilvray I.D., Gallinger A., Pugh T.J., Sapisochin G., Vogel A., Knox J.J., Notta F., Grant R.C. 2026. [Integrated Whole-Genome and Transcriptome Sequencing Reveals Divergent Evolutionary Processes Across Biliary Tract Cancer Subtypes.](https://doi.org/10.1158/0008-5472.CAN-26-1137) *Cancer Research*.
 
 ## License
 
